@@ -1,0 +1,578 @@
+#include "TaxonomyWrapper.h"
+#include "Parameters.h"
+#include "Util.h"
+
+#include <string>
+#include <iostream>
+#include <regex>
+#include <cstdint>
+
+#ifdef OPENMP
+#include <omp.h>
+#endif
+
+using namespace std;
+
+struct CountAtRank {
+    int total;
+    int FP;
+    int TP;
+    int FN;
+    float precision;
+    float sensitivity;
+    float f1;
+    void calculate() {
+        precision = (float)TP / (float)(TP + FP);
+        sensitivity = (float)TP / (float)(total);
+        f1 = 2 * precision * sensitivity / (precision + sensitivity);
+    }
+};
+
+struct GradeResult{
+    unordered_map<string, CountAtRank> countsAtRanks;
+    string path;
+};
+
+struct Score2{
+    Score2(int tf, std::string rank, float score) : tf(tf), rank(rank), score(score) { }
+    int tf; // 1 = t, 2 = f
+    std::string rank;
+    float score;
+};
+
+
+
+char compareTaxonAtRank_CAMI(TaxID shot, TaxID target, const TaxonomyWrapper & ncbiTaxonomy, CountAtRank & count,
+                             const string & rank);
+
+char compareTaxonAtRank_CAMI_euk(TaxID shot, TaxID target, TaxonomyWrapper & ncbiTaxonomy, CountAtRank & count,
+                                 const string & rank);
+
+char compareTaxon_overclassification(TaxID shot, TaxID target, TaxonomyWrapper & ncbiTaxonomy, CountAtRank & count,
+                                     const string & rank);
+
+char compareTaxon_hivExclusion(TaxID shot, TaxID target, CountAtRank & count);
+
+int grade(const Parameters &par) {
+
+    const string readClassificationFileList = par.filenames[0];
+    const string mappingFileList = par.filenames[1];
+    const string taxonomy = par.filenames[2];
+
+    // Parse ranks
+    vector<string> ranks;
+    if (!par.testRank.empty()) {
+        ranks = Util::split(par.testRank, ",");
+    } else {
+        ranks = {"class", "order", "family", "genus", "species"};
+    }
+
+    // Parse print columns
+    vector<string> printColumns;
+    vector<size_t> printColumnsIdx;
+    if (!par.printColumns.empty()) {
+        printColumns = Util::split(par.printColumns, ",");
+        // stoi
+        for (const auto &printColumn : printColumns) {
+            printColumnsIdx.push_back(stoi(printColumn));
+        }
+    }
+
+    // Load Taxonomy
+    string names = taxonomy + "/names.dmp";
+    string nodes = taxonomy + "/nodes.dmp";
+    string merged = taxonomy + "/merged.dmp";
+    
+    
+
+    // Load mapping file names
+    ifstream mappingFileListFile;
+    mappingFileListFile.open(mappingFileList);
+    string eachLine;
+    vector<string> mappingFileNames;
+    if (mappingFileListFile.is_open()) {
+        while (getline(mappingFileListFile, eachLine)) {
+            mappingFileNames.push_back(eachLine);
+        }
+    } else {
+        cerr << "Cannot open file for mapping file list" << endl;
+    }
+    cout << "Answer sheet loaded" << endl;
+
+    // Load classification file names
+    ifstream readClassificationFileListFile;
+    readClassificationFileListFile.open(readClassificationFileList);
+    vector<string> readClassificationFileNames;
+    if (readClassificationFileListFile.is_open()) {
+        while (getline(readClassificationFileListFile, eachLine)) {
+            readClassificationFileNames.push_back(eachLine);
+        }
+    } else {
+        cerr << "Cannot open file for read classification file list" << endl;
+    }
+    cout << "Classification results loaded" << endl;
+
+    size_t numberOfFiles = readClassificationFileNames.size();
+    vector<GradeResult> results;
+    results.resize(numberOfFiles);
+
+#ifdef OPENMP
+    omp_set_num_threads(par.threads);
+#endif
+
+#pragma omp parallel default(none), shared(results, ranks, numberOfFiles, mappingFileNames, readClassificationFileNames,\
+par, cout, printColumnsIdx, cerr, names, nodes, merged)
+    {
+        // Grade each file
+        unordered_map<string, int> assacc2taxid;
+        vector<int> rightAnswers;
+        vector<int> classList;
+        vector<string> readIds;
+        vector<float> scores;
+        string mappingFile;
+        string readClassificationFileName;
+
+        vector<string> ranks_local = ranks;
+
+        TaxonomyWrapper ncbiTaxonomy(names, nodes, merged, false);
+        cout << "Taxonomy loaded" << endl;
+
+        // Print scores of TP and FP
+        unordered_map<string, vector<size_t>> rank2TpIdx;
+        unordered_map<string, vector<size_t>> rank2FpIdx;
+        unordered_map<string, vector<size_t>> rank2FnIdx;
+        vector<vector<string>> idx2values;
+        if (!printColumnsIdx.empty()){
+            for (const auto & rank : ranks_local) {
+                rank2TpIdx[rank] = vector<size_t>();
+                rank2FpIdx[rank] = vector<size_t>();
+                rank2FnIdx[rank] = vector<size_t>();
+            }
+        }
+
+#pragma omp for schedule(dynamic)
+        for (size_t i = 0; i < numberOfFiles; ++i) {
+            // Initialize
+            assacc2taxid.clear();
+            rightAnswers.clear();
+            classList.clear();
+            readIds.clear();
+            scores.clear();
+            if (!printColumnsIdx.empty()){
+                for (const auto & rank : ranks_local) {
+                    rank2TpIdx[rank].clear();
+                    rank2FpIdx[rank].clear();
+                    rank2FnIdx[rank].clear();
+                }
+            }
+            mappingFile = mappingFileNames[i];
+            readClassificationFileName = readClassificationFileNames[i];
+
+            // Load the mapping file (answer sheet) (accession to taxID)
+            string key, value;
+            ifstream map;
+            map.open(mappingFile);
+            if (map.is_open()) {
+                while (getline(map, key, '\t')) {
+                    getline(map, value, '\n');
+                    if (par.testType != "kapk") {
+                        // remove version number
+                        size_t pos = key.find('.');
+                        if (pos != string::npos) {
+                            key = key.substr(0, pos);
+                        }
+                    }
+                    assacc2taxid[key] = stoi(value);
+                }
+            } else {
+                cout << "Cannot open file for answer" << endl;
+            }
+            map.close();
+
+            // Load classification results
+            string resultLine;
+            ifstream readClassification;
+            readClassification.open(readClassificationFileName);
+            vector<string> fields;
+            string field;
+            int classInt;
+
+            vector<Score2> tpOrFp;
+            regex regex1("(GC[AF]_[0-9]+\\.[0-9]+)");
+            regex assemblyAccessionNoVersion("(GC[AF]_[0-9]+)");
+            smatch assacc;
+            size_t numberOfClassifications = 0;
+            unordered_map<string, int> observed;
+            while (getline(readClassification, resultLine, '\n')) {
+                // skip line starting with '#'
+                if (resultLine.empty() || resultLine[0] == '#') {
+                    continue;
+                }
+
+                // Parse classification result
+                fields = Util::split(resultLine, "\t");
+
+                // Skip the line if it is not a classification result
+                if (!isdigit(fields[par.taxidCol][0])) {
+                    continue;
+                }
+
+      
+                
+                string id = fields[par.readIdCol];
+                string fullId = id;
+                if (par.testType == "gtdb") {
+                    regex_search(id, assacc, regex1);
+                    id = assacc[0];
+                    // remove version number
+                    size_t pos = id.find('.');
+                    if (pos != string::npos) {
+                        id = id.substr(0, pos);
+                    }
+                } else if (par.testType == "gtdb-amgsim") {
+                    if (!regex_search(id, assacc, assemblyAccessionNoVersion)) {
+                        cerr << "Cannot parse GTDB-aMGSIM read ID: " << id << endl;
+                        continue;
+                    }
+                    id = assacc[0];
+                } else if (par.testType == "hiv" || par.testType == "hiv-ex") {
+                    size_t pos = id.find('_');
+                    id = id.substr(0, pos);
+                } else if (par.testType == "cami" || par.testType == "cami-long" || par.testType == "cami-euk") {
+                    size_t pos = id.find('/');
+                    id = id.substr(0, pos);
+                } else if (par.testType == "over") {
+                    regex_search(id, assacc, regex1);
+                    id = assacc[0];
+                } else if (par.testType == "kapk") {
+                    const size_t start = id.find("----");
+                    if (start == string::npos) {
+                        cerr << "Cannot parse KapK read ID: " << id << endl;
+                        continue;
+                    }
+                    const size_t accessionStart = start + 4;
+                    const size_t end = id.find("__", accessionStart);
+                    if (end == string::npos) {
+                        cerr << "Cannot parse KapK read ID: " << id << endl;
+                        continue;
+                    }
+                    id = id.substr(accessionStart, end - accessionStart);
+                }
+
+                classInt = stoi(fields[par.taxidCol]);
+
+                // Skip if the read is already classified
+                if (par.skipSecondary == 1) {
+                    size_t pos = fullId.find('/');
+                    fullId = fullId.substr(0, pos);
+                    if (par.testType != "gtdb" && par.testType != "gtdb-amgsim") {
+                        cerr << "skipSecondary is only available for GTDB" << endl;
+                        exit(1);
+                    }
+                    if (observed.find(fullId) == observed.end()) { // first observation
+                        if (classInt != 0) { // classified
+                            observed[fullId] = 1;
+                        } else { // not classified
+                            observed[fullId] = 0;
+                            continue;
+                        }
+                    } else { // second observation
+                        if (observed[fullId] == 1) { // already classified
+                            continue;
+                        } 
+                    }
+                }
+                
+                readIds.push_back(fullId);
+                
+                // Read ID -> right answer
+                rightAnswers.push_back(assacc2taxid[id]);
+
+                // Read classification
+                
+                classList.push_back(classInt);
+                if (classInt != 0) {
+                    numberOfClassifications++;
+                }
+
+                // Read column for printing
+                if (!printColumnsIdx.empty()) {
+                    vector<string> values;
+                    for (const auto &idx: printColumnsIdx) {
+                        values.push_back(fields[idx]);
+                    }
+                    idx2values.push_back(values);
+                }
+            }
+            readClassification.close();
+
+            // Score the classification
+            char p;
+            for (size_t j = 0; j < classList.size(); j++) {
+                if (par.verbosity == 3) cout << readIds[j] << " " << classList[j] << " " << rightAnswers[j];
+                for (const string &rank: ranks_local) {
+                    if (par.testType == "over") {
+                        p = compareTaxon_overclassification(classList[j], rightAnswers[j], ncbiTaxonomy,
+                                                            results[i].countsAtRanks[rank], rank);
+                    } else if(par.testType == "hiv-ex"){
+                        p = compareTaxon_hivExclusion(classList[j], 11676, results[i].countsAtRanks[rank]);
+                    } else if (par.testType == "cami-euk"){
+                        p = compareTaxonAtRank_CAMI_euk(classList[j], rightAnswers[j], ncbiTaxonomy,
+                                                        results[i].countsAtRanks[rank], rank);
+                    } else {
+                        p = compareTaxonAtRank_CAMI(classList[j], rightAnswers[j], ncbiTaxonomy,
+                                                         results[i].countsAtRanks[rank], rank);
+                    }
+                    if (!printColumnsIdx.empty()) {
+                        if (p == 'O') rank2TpIdx[rank].push_back(j);
+                        else if (p == 'X') rank2FpIdx[rank].push_back(j);
+                        else if (p == 'N') rank2FnIdx[rank].push_back(j);
+                    }
+                    if (par.verbosity == 3) cout << " " << p;
+                }
+                if (par.verbosity == 3) cout << endl;
+            }
+
+            // Calculate the scores
+            for (const string &rank: ranks_local) {
+                results[i].countsAtRanks[rank].calculate();
+            }
+
+            // Write the values of TP, FP, and FN
+            if (!printColumnsIdx.empty()) {
+                for (const string & rank : ranks_local) {
+                    // TP
+                    ofstream tpFile;
+                    tpFile.open(readClassificationFileName + "." + rank + ".tp");
+                    for (const auto & idx : rank2TpIdx[rank]) {
+                        for (const auto & value : idx2values[idx]) {
+                            tpFile << value << "\t";
+                        }
+                        tpFile << endl;
+                    }
+                    tpFile.close();
+
+                    // FP
+                    ofstream fpFile;
+                    fpFile.open(readClassificationFileName + "." + rank + ".fp");
+                    for (const auto & idx : rank2FpIdx[rank]) {
+                        for (const auto & value : idx2values[idx]) {
+                            fpFile << value << "\t";
+                        }
+                        fpFile << endl;
+                    }
+                    fpFile.close();
+
+                    // FN
+                    ofstream fnFile;
+                    fnFile.open(readClassificationFileName + "." + rank + ".fn");
+                    for (const auto & idx : rank2FnIdx[rank]) {
+                        for (const auto & value : idx2values[idx]) {
+                            fnFile << value << "\t";
+                        }
+                        fnFile << endl;
+                    }
+                    fnFile.close();
+                }
+            }
+
+
+            #pragma omp critical
+            {   
+                // Print Grade Result of each file
+                cout << readClassificationFileName << endl;
+                cout << "The number of reads: " << rightAnswers.size() << endl;
+                cout << "The number of reads classified: " << numberOfClassifications << endl;
+                for (const string &rank: ranks_local) {
+                    cout << rank << " " << results[i].countsAtRanks[rank].total << " "
+                         << results[i].countsAtRanks[rank].TP + results[i].countsAtRanks[rank].FP << " "
+                         << results[i].countsAtRanks[rank].TP << " " << results[i].countsAtRanks[rank].FP << " "
+                         << results[i].countsAtRanks[rank].precision << " "
+                         << results[i].countsAtRanks[rank].sensitivity << " " << results[i].countsAtRanks[rank].f1 << endl;
+                }
+                cout << endl;
+            }
+        }
+    } // End of parallel region
+
+    cout << "Rank\t";
+    for (size_t i = 0; i < results.size(); i++) {
+        cout << "Precision\tSensitivity\tF1\t";
+    }
+    cout << endl;
+    for (const string &rank: ranks) {
+        cout << rank << "\t";
+        for (auto & result : results) {
+            cout << result.countsAtRanks[rank].precision << "\t" << result.countsAtRanks[rank].sensitivity
+                 << "\t" << result.countsAtRanks[rank].f1 << "\t";
+        }
+        cout << endl;
+    }
+    return 0;
+}
+
+char compareTaxonAtRank_CAMI(TaxID shot, TaxID target, const TaxonomyWrapper & ncbiTaxonomy, CountAtRank & count,
+                             const string & rank) {
+    if (rank == "subspecies") {
+        // Do not count if the rank of target is higher than current rank
+        // current rank is subspecies
+        // the rank of target is subspecies
+
+
+        // False negative; no classification or meaningless classification
+        if (shot == 1 || shot == 0) {
+            count.FN ++;
+            count.total ++;
+            return 'N';
+        }
+
+        // False negative if the rank of shot is higher than current rank
+        const TaxonNode * shotNode = ncbiTaxonomy.taxonNode(shot);
+        if (strcmp(ncbiTaxonomy.getString(shotNode->rankIdx), "no rank") != 0) { // no rank is subspecies
+            // cout << ncbiTaxonomy.getString(shotNode->rankIdx) << endl;
+            count.FN ++;
+            count.total ++;
+            return 'N';
+        }
+
+        count.total++;
+        if(shot == target){
+            count.TP++;
+            return 'O';
+        } else {
+            count.FP++;
+            return 'X';
+        }
+    } else {
+        // Do not count if the rank of target is higher than current rank
+        TaxID targetTaxIdAtRank = ncbiTaxonomy.getTaxIdAtRank(target, rank);
+        // cout << targetTaxIdAtRank << endl;
+        const TaxonNode * targetNode = ncbiTaxonomy.taxonNode(targetTaxIdAtRank);
+        int rankIdx = ncbiTaxonomy.findRankIndex2(rank);
+        // cout << shot << " " << targetTaxIdAtRank << " " << targetNode->rankIdx << " " << endl;
+        if (ncbiTaxonomy.findRankIndex2(ncbiTaxonomy.getString(targetNode->rankIdx)) > rankIdx) {
+            return '-';
+        }
+        
+        // False negative; no classification or meaningless classification
+        if(shot == 1 || shot == 0) {
+            count.FN ++;
+            count.total ++;
+            return 'N';
+        }
+
+        // False negative if the rank of shot is higher than current rank
+        TaxID shotTaxIdAtRank = ncbiTaxonomy.getTaxIdAtRank(shot, rank);
+        const TaxonNode * shotNode = ncbiTaxonomy.taxonNode(shotTaxIdAtRank);
+        if (ncbiTaxonomy.findRankIndex2(ncbiTaxonomy.getString(shotNode->rankIdx)) > rankIdx) {
+            count.FN ++;
+            count.total ++;
+            return 'N';
+        }   
+        count.total++;
+        if(shotTaxIdAtRank == targetTaxIdAtRank){
+            count.TP++;
+            return 'O';
+        } else {
+            count.FP++;
+            return 'X';
+        }
+    }
+}
+
+char compareTaxonAtRank_CAMI_euk(TaxID shot, TaxID target, TaxonomyWrapper & ncbiTaxonomy, CountAtRank & count,
+                             const string & rank) {
+    // Do not count if the rank of target is higher than current rank
+    TaxID targetTaxIdAtRank = ncbiTaxonomy.getTaxIdAtRank(target, rank);
+    const TaxonNode * targetNode = ncbiTaxonomy.taxonNode(targetTaxIdAtRank);
+    int rankIdx = NcbiTaxonomy::findRankIndex(rank);
+    if (NcbiTaxonomy::findRankIndex(ncbiTaxonomy.getString(targetNode->rankIdx)) > rankIdx) {
+        return '-';
+    }
+
+    // Do not count if target is not eukaryote
+    if (ncbiTaxonomy.getTaxIdAtRank(target, "superkingdom") != 2759) {
+        return '-';
+    }
+
+    // False negative; no classification or meaningless classification
+    if(shot == 1 || shot == 0) {
+        count.FN ++;
+        count.total ++;
+        return 'N';
+    }
+
+    // False negative if the rank of shot is higher than current rank
+    TaxID shotTaxIdAtRank = ncbiTaxonomy.getTaxIdAtRank(shot, rank);
+    const TaxonNode * shotNode = ncbiTaxonomy.taxonNode(shotTaxIdAtRank);
+    if (NcbiTaxonomy::findRankIndex(ncbiTaxonomy.getString(shotNode->rankIdx)) > rankIdx) {
+        count.FN ++;
+        count.total ++;
+        return 'N';
+    }
+
+    count.total++;
+    if(shotTaxIdAtRank == targetTaxIdAtRank){
+        count.TP++;
+        return 'O';
+    } else {
+        count.FP++;
+        return 'X';
+    }
+}
+
+char compareTaxon_overclassification(TaxID shot, TaxID target, TaxonomyWrapper & ncbiTaxonomy, CountAtRank & count,
+                                     const string & rank){
+    // Do not count if the rank of target is higher than current rank
+//    TaxID targetTaxIdAtRank = ncbiTaxonomy.getTaxIdAtRank(target, rank);
+    const TaxonNode * targetNode = ncbiTaxonomy.taxonNode(target);
+    int rankIdx = NcbiTaxonomy::findRankIndex(rank);
+    if (NcbiTaxonomy::findRankIndex(ncbiTaxonomy.getString(targetNode->rankIdx)) > rankIdx) {
+        return '-';
+    }
+
+
+    // False negative; no classification or meaningless classification
+    if(shot == 1 || shot == 0) {
+        count.FN ++;
+        count.total ++;
+        return 'N';
+    }
+
+    // False negative if the rank of shot is higher than current rank
+    const TaxonNode * shotNode = ncbiTaxonomy.taxonNode(shot);
+    if (NcbiTaxonomy::findRankIndex(ncbiTaxonomy.getString(shotNode->rankIdx)) > rankIdx) {
+        count.FN ++;
+        count.total ++;
+        return 'N';
+    }
+
+    count.total++;
+    if(shot == target){
+        count.TP++;
+        return 'O';
+    } else {
+        count.FP++;
+        return 'X';
+    }
+}
+
+// TP: HIV-1 at species rank
+// FP: Classifications to other taxa
+// FN: Not-classified
+char compareTaxon_hivExclusion(TaxID shot, TaxID target, CountAtRank & count){
+    // False negative; no classification or meaningless classification
+    if(shot == 1 || shot == 0) {
+        count.FN ++;
+        count.total ++;
+        return 'N';
+    }
+    count.total++;
+    if(shot == target){
+        count.TP++;
+        return 'O';
+    } else {
+        count.FP++;
+        return 'X';
+    }
+}
