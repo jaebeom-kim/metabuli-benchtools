@@ -19,7 +19,7 @@ add_executable(benchtools
     src/taxonomy/TaxonomyWrapper.cpp
     src/tools/grade.cpp
     src/tools/makeBenchmarkSet.cpp
-    src/tools/makeInclusionQuerySet.cpp
+    src/tools/sampleQueries.cpp
 )
 
 target_include_directories(benchtools PRIVATE

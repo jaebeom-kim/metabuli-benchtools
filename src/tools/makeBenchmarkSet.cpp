@@ -8,7 +8,9 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <algorithm>
+#include <random>
 #include <cstring>
 #include <cstdio>
 #include <cstdint>
@@ -18,6 +20,53 @@ using namespace std;
 int makeGtdbBenchmarkSet(const Parameters & par);
 
 int virusBenchmarkSet(const Parameters & par);
+
+// One query genome in the benchmark, with the answer-key metadata needed to
+// grade it. All query sets (exclusion + inclusion) are emitted as rows of this
+// record into a single <assemblyList>.query.tsv manifest, so downstream tools
+// filter by `category` instead of reading a dozen separate files.
+struct QueryRecord {
+    std::string accession;    // the query assembly accession
+    std::string category;     // familyExclusion | genusExclusion | speciesExclusion |
+                              // subspeciesExclusion | subspeciesInclusion |
+                              // subspeciesInclusionPair | speciesInclusionPair
+    std::string expectedRank; // deepest rank a correct call can reach given the DB
+    TaxID       queryTaxid;   // taxid of the query assembly itself
+    TaxID       subjectTaxid; // the taxon that defines the case (excluded/shared);
+                              // paired rows share this value
+    std::string subjectRank;  // rank of subjectTaxid
+    int         subjectSize;  // number of direct members of subjectTaxid
+};
+
+// Append the subspecies/species inclusion query pairs (formerly the standalone
+// makeInclusionQuerySet command) to `queries`. Uses its own RNG streams
+// (srand(4), mt19937(0)) that run independently of the exclusion stage, and
+// draws from the full assembly set (species2assembly / genus2species are never
+// mutated by the exclusion stage), so the same assemblies are selected as before.
+static int appendInclusionQueries(
+    std::vector<QueryRecord> & queries,
+    std::unordered_map<std::string, TaxID> & observedAcc2taxid,
+    std::unordered_map<TaxID, std::vector<Assembly>> & species2assembly,
+    std::unordered_map<TaxID, std::vector<TaxID>> & genus2species);
+
+// Input-tree counts for the summary report (filled by each benchmark builder).
+struct BenchmarkSummary {
+    long totalGenomes = 0; // total input assemblies
+    long nOrders = 0;
+    long nFamilies = 0;
+    long nGenera = 0;
+    long nSpecies = 0;
+};
+
+// Write the three benchmark outputs: <prefix>.database (one accession per line,
+// the genomes to build the classifier DB from), <prefix>.query.tsv (the unified
+// query manifest), and <prefix>.summary (totals + per-rank exclusion/inclusion
+// counts).
+static void writeBenchmarkOutputs(
+    const std::string & prefix,
+    const BenchmarkSummary & summary,
+    const std::vector<std::string> & databaseAssemblies,
+    const std::vector<QueryRecord> & queries);
 
 int makeBenchmarkSet(const Parameters &par) {
     // Make assembly accession 2 taxid mapping
@@ -38,13 +87,8 @@ int makeGtdbBenchmarkSet(const Parameters & par) {
     std::srand(par.randomSeed);
     string assemblyList = par.filenames[0];
     string taxonomyPath = par.filenames[1];
-    string excludedFamilyList = assemblyList + ".excludedFamilies";
-    string excludedGenusList = assemblyList + ".excludedGenera";
-    string excludedSpeciesList = assemblyList + ".excludedSpecies";
-    string excludedAssemblyList = assemblyList + ".excludedAssembly";
-    string includedAssemblyList = assemblyList + ".includedAssembly";
-    string databaseAssemblyList = assemblyList + ".databaseAssembly";
-    string totalExludedAssemblyList = assemblyList + ".totalExcludedAssembly";
+
+    vector<QueryRecord> queries;
 
     // editNames(taxonomyPath + "/names.dmp", par.assacc2taxid);
 
@@ -150,15 +194,13 @@ int makeGtdbBenchmarkSet(const Parameters & par) {
     vector<TaxID> excludedSpecies;
 
     // *** Family Exclusion ***
-    ofstream excludedFamilyListFile(excludedFamilyList);
-    // 1. Find orders with multiple families 
+    // 1. Find orders with multiple families
     vector<TaxID> orderWithMultipleFamilies;
     for (auto &order : order2family) {
         if (order.second.size() > 1) {
             orderWithMultipleFamilies.push_back(order.first);
         }
     }
-    excludedFamilyListFile << "Orders with multiple families: " << orderWithMultipleFamilies.size() << endl;
     // 2. Randomly choose n orders with multiple families without replacement
     vector<TaxID> selectedOrders;
     int n = orderWithMultipleFamilies.size() / 3;
@@ -168,8 +210,8 @@ int makeGtdbBenchmarkSet(const Parameters & par) {
         selectedOrders.push_back(orderWithMultipleFamilies[idx]);
         orderWithMultipleFamilies.erase(orderWithMultipleFamilies.begin() + idx);
     }
-    // 3. Randomly choose one family from each selected order
-    excludedFamilyListFile << "Order\tOrder_Size\tExcluded_Family\tFamily_Size\tAssemblies\tQuery_Assembly" << endl;
+    // 3. Randomly choose one family from each selected order; its whole subtree
+    //    is dropped from the DB and one member becomes the family-exclusion query.
     vector<string> excludedFamilyAssemblies;
     for (auto &order : selectedOrders) {
         currentExcludedAssemblies.clear();
@@ -177,7 +219,6 @@ int makeGtdbBenchmarkSet(const Parameters & par) {
         int idx = random % order2family[order].size();
         TaxID excludingFamily = order2family[order][idx];
         excludedFamilies.push_back(excludingFamily);
-        excludedFamilyListFile << order << "\t" << order2family[order].size() << "\t" << excludingFamily  << "\t" << family2genus[excludingFamily].size() << "\t";
         // Exclude the selected family
         for (size_t i = 0; i < family2genus[excludingFamily].size(); i++) {
             TaxID genus = family2genus[excludingFamily][i];
@@ -190,25 +231,18 @@ int makeGtdbBenchmarkSet(const Parameters & par) {
                     totalExcludedAssemblies.push_back(assemblyName);
                     excludedFamilyAssemblies.push_back(assemblyName);
                     currentExcludedAssemblies.push_back(assemblyName);
-                    if (i == family2genus[excludingFamily].size() - 1 
-                        && j == genus2species[genus].size() - 1
-                        && k == species2assembly[species].size() - 1) {
-                        excludedFamilyListFile << assemblyName << "\t";
-                    } else {
-                        excludedFamilyListFile << assemblyName << ",";
-                    }
-                 }    
+                 }
             }
         }
-        // randomly choose one assembly from the current excluded assemblies
-        idx = random % currentExcludedAssemblies.size();
-        excludedFamilyListFile << currentExcludedAssemblies[idx] << endl;
+        // Report every excluded member genome as a family-exclusion query candidate.
+        for (const string & member : currentExcludedAssemblies) {
+            queries.push_back({member, "familyExclusion", "order", observedAcc2taxid[member],
+                               excludingFamily, "family", (int) family2genus[excludingFamily].size()});
+        }
     }
-    excludedFamilyListFile.close();
 
 
     // *** Genus Exclusion ***
-    ofstream excludedGenusListFile(excludedGenusList);
     // 1. Find families with multiple genera
     vector<TaxID> familyWithMultipleGenera;
 
@@ -223,7 +257,6 @@ int makeGtdbBenchmarkSet(const Parameters & par) {
         }
     }
     cout << "Number of genera before exclusion: " << genusNumBeforeExclusion << endl;
-    excludedGenusListFile << "Families with multiple genera: " << familyWithMultipleGenera.size() << endl;
     // 2. Randomly choose n families with multiple genera without replacement
     n = familyWithMultipleGenera.size() / 3;
     cout << "Excluding " << n << " genera" << endl;
@@ -233,8 +266,8 @@ int makeGtdbBenchmarkSet(const Parameters & par) {
         selectedFamilies.push_back(familyWithMultipleGenera[idx]);
         familyWithMultipleGenera.erase(familyWithMultipleGenera.begin() + idx);
     }
-    // 3. Randomly choose one genus from each selected family
-    excludedGenusListFile << "Family\tFamily_Size\tExcluded_Genus\tGenus_Size\tAssemblies\tQuery_Assembly" << endl;
+    // 3. Randomly choose one genus from each selected family; drop it from the DB
+    //    and take one member as the genus-exclusion query.
     vector<string> excludedGenusAssemblies;
     for (auto &family : selectedFamilies) {
         currentExcludedAssemblies.clear();
@@ -242,25 +275,20 @@ int makeGtdbBenchmarkSet(const Parameters & par) {
         int idx = random % family2genus[family].size();
         TaxID excludingGenus = family2genus[family][idx];
         excludedGenera.push_back(excludingGenus);
-        excludedGenusListFile << family << "\t" << family2genus[family].size() << "\t" << excludingGenus  << "\t" << genus2species[excludingGenus].size() << "\t";
         for (size_t i = 0; i < genus2species[excludingGenus].size(); i++) {
             excludedSpecies.push_back(genus2species[excludingGenus][i]);
             for (size_t j = 0; j < species2assembly[genus2species[excludingGenus][i]].size(); j++) {
                 totalExcludedAssemblies.push_back(species2assembly[genus2species[excludingGenus][i]][j].name);
                 excludedGenusAssemblies.push_back(species2assembly[genus2species[excludingGenus][i]][j].name);
                 currentExcludedAssemblies.push_back(species2assembly[genus2species[excludingGenus][i]][j].name);
-                if (i == genus2species[excludingGenus].size() - 1 && j == species2assembly[genus2species[excludingGenus][i]].size() - 1) {
-                    excludedGenusListFile << species2assembly[genus2species[excludingGenus][i]][j].name << "\t";
-                } else {
-                    excludedGenusListFile << species2assembly[genus2species[excludingGenus][i]][j].name << ",";
-                }
             }
         }
-        // randomly choose one assembly from the current excluded assemblies
-        idx = random % currentExcludedAssemblies.size();
-        excludedGenusListFile << currentExcludedAssemblies[idx] << endl;
+        // Report every excluded member genome as a genus-exclusion query candidate.
+        for (const string & member : currentExcludedAssemblies) {
+            queries.push_back({member, "genusExclusion", "family", observedAcc2taxid[member],
+                               excludingGenus, "genus", (int) genus2species[excludingGenus].size()});
+        }
     }
-    excludedGenusListFile.close();
 
 
     // *** Species Exclusion ***
@@ -286,10 +314,8 @@ int makeGtdbBenchmarkSet(const Parameters & par) {
         genusWithMultipleSpecies.erase(genusWithMultipleSpecies.begin() + idx);
     }
 
-    // For each selected genus, randomly choose one species to exclude
-    ofstream excludedSpeciesListFile(excludedSpeciesList);
-    excludedSpeciesListFile << "Genera with multiple species: " << genusWithMultipleSpecies.size() + selectedGenera.size() << endl;
-    excludedSpeciesListFile << "Genus\tGenus_Size\tExcluded_Species\tSpecies_Size\tAssemblies\tQuery_Assembly" << endl;
+    // For each selected genus, randomly choose one species to exclude; drop it
+    // from the DB and take one member as the species-exclusion query.
     vector<string> excludedSpeciesAssemblies;
     for (auto &genus : selectedGenera) {
         currentExcludedAssemblies.clear();
@@ -297,22 +323,17 @@ int makeGtdbBenchmarkSet(const Parameters & par) {
         int idx = random % genus2species[genus].size();
         TaxID excludingSpecies = genus2species[genus][idx];
         excludedSpecies.push_back(excludingSpecies);
-        excludedSpeciesListFile << genus << "\t" << genus2species[genus].size() << "\t" << excludingSpecies << "\t" << species2assembly[excludingSpecies].size() << "\t";
         for (size_t i = 0; i < species2assembly[excludingSpecies].size(); i++) {
             currentExcludedAssemblies.push_back(species2assembly[excludingSpecies][i].name);
             totalExcludedAssemblies.push_back(species2assembly[excludingSpecies][i].name);
             excludedSpeciesAssemblies.push_back(species2assembly[excludingSpecies][i].name);
-            if (i == species2assembly[excludingSpecies].size() - 1) {
-                excludedSpeciesListFile << species2assembly[excludingSpecies][i].name << "\t";
-            } else {
-                excludedSpeciesListFile << species2assembly[excludingSpecies][i].name << ",";
-            }
         }
-        // randomly choose one assembly from the current excluded assemblies
-        idx = random % currentExcludedAssemblies.size();
-        excludedSpeciesListFile << currentExcludedAssemblies[idx] << endl;
+        // Report every excluded member genome as a species-exclusion query candidate.
+        for (const string & member : currentExcludedAssemblies) {
+            queries.push_back({member, "speciesExclusion", "genus", observedAcc2taxid[member],
+                               excludingSpecies, "species", (int) species2assembly[excludingSpecies].size()});
+        }
     }
-    excludedSpeciesListFile.close();
 
     for (auto &excludedGenus : excludedGenera) {
         for (auto & species : genus2species[excludedGenus]) {
@@ -343,80 +364,34 @@ int makeGtdbBenchmarkSet(const Parameters & par) {
         speciesWithMultipleAssemblies.erase(speciesWithMultipleAssemblies.begin() + idx);
     }
 
-    // 3. For each selected species, randomly choose one assembly to exclude    
-    ofstream excludedAssemblyListFile(excludedAssemblyList);
-    excludedAssemblyListFile << "Species with multiple assemblies: " << speciesWithMultipleAssemblies.size() + selectedSpecies.size() << endl;
-    excludedAssemblyListFile << "Species\tSpecies_Size\tExcluded_Assemblies" << endl;
+    // 3. For each selected species, randomly choose one assembly to exclude; its
+    //    species stays in the DB via siblings, so it is the subspecies-exclusion query.
     vector<string> excludedSubspeciesAssemblies;
     for (auto &species : selectedSpecies) {
         int idx = rand() % species2assembly[species].size();
-        totalExcludedAssemblies.push_back(species2assembly[species][idx].name);
-        excludedSubspeciesAssemblies.push_back(species2assembly[species][idx].name);
-        excludedAssemblyListFile << species << "\t" << species2assembly[species].size() << "\t" << species2assembly[species][idx].name << endl;
-    }
-    excludedAssemblyListFile.close();
-
-    // For remaining species with multiple assemblies, randomly choose one assembly to include
-    ofstream includedAssemblyListFile(includedAssemblyList);
-    includedAssemblyListFile << "Species\tSpecies_Size\tIncluded_Assemblies" << endl;
-    vector<string> includedAssemblies;
-    for (auto &species : speciesWithMultipleAssemblies) {
-        int idx = rand() % species2assembly[species].size();
-        includedAssemblies.push_back(species2assembly[species][idx].name);
-        includedAssemblyListFile << species << "\t" << species2assembly[species].size() << "\t" << species2assembly[species][idx].name << endl;
+        const string & query = species2assembly[species][idx].name;
+        totalExcludedAssemblies.push_back(query);
+        excludedSubspeciesAssemblies.push_back(query);
+        queries.push_back({query, "subspeciesExclusion", "species", observedAcc2taxid[query],
+                           species, "species", (int) species2assembly[species].size()});
     }
 
-    ofstream totalExcludedAssemblyListFile(totalExludedAssemblyList);
-    for (auto &assembly : totalExcludedAssemblies) {
-        totalExcludedAssemblyListFile << assembly << endl;
-    }
-    totalExcludedAssemblyListFile.close();
     cout << "Total excluded assemblies: " << totalExcludedAssemblies.size() << endl;
-    
 
-    // Write database assembly list
-    ofstream databaseAssemblyListFile(databaseAssemblyList);
+    // Compute the database assembly list (everything not excluded).
     vector<string> databaseAssemblies;
     for (auto &assembly : totalAssemblyAccessions) {
         if (find(totalExcludedAssemblies.begin(), totalExcludedAssemblies.end(), assembly) == totalExcludedAssemblies.end()) {
-            databaseAssemblyListFile << assembly << endl;
             databaseAssemblies.push_back(assembly);
         }
     }
-    databaseAssemblyListFile.close();
 
 
 
     // Validate the database assembly list
-
-
-    // Validate included assemblies
-    cout << "Validating included assemblies..." << endl;
-    for (size_t i = 0; i < includedAssemblies.size(); i++) {
-        TaxID includedTaxid = observedAcc2taxid[includedAssemblies[i]];
-        // There must be at least one Species rank LCA
-        // Database assembly list must include this assembly
-        int speciesCount = 0;
-        if (find(databaseAssemblies.begin(), databaseAssemblies.end(), includedAssemblies[i]) == databaseAssemblies.end()) {
-            cout << "Error: " << includedAssemblies[i] << " is not a valid inclusion. Not in database assembly list." << endl;
-            return 1;
-        }
-
-        for (size_t j = 0; j < databaseAssemblies.size(); j++) {
-            TaxID databaseTaxid = observedAcc2taxid[databaseAssemblies[j]];
-            const TaxonNode * lcaTaxon = taxonomy.taxonNode(taxonomy.LCA(includedTaxid, databaseTaxid));
-            const string & rank = taxonomy.getString(lcaTaxon->rankIdx);
-            if (rank == "species") {
-                speciesCount++;
-                break;
-            } 
-        }
-        if (speciesCount == 0) {
-            cout << "Error: " << includedAssemblies[i] << " is not a valid inclusion. No Species rank LCA." << endl;
-            return 1;
-        }
-    }
-    cout << "Validation of included assemblies complete." << endl;
+    if (par.skipValidation) {
+        cout << "Skipping validation (--skip-validation)." << endl;
+    } else {
 
     // Validate Family Exclusion
     cout << "Validating excluded family..." << endl;
@@ -574,8 +549,182 @@ int makeGtdbBenchmarkSet(const Parameters & par) {
             return 1;
         }
     }
-    cout << "Validation of excluded subspecies complete." << endl;    
+    cout << "Validation of excluded subspecies complete." << endl;
+    } // end validation (--skip-validation)
+
+    // Inclusion query pairs (subspecies + species), folded in from the former
+    // makeInclusionQuerySet command.
+    if (int rc = appendInclusionQueries(queries, observedAcc2taxid, species2assembly, genus2species)) {
+        return rc;
+    }
+
+    BenchmarkSummary summary;
+    summary.totalGenomes = (long) totalAssemblyAccessions.size();
+    summary.nOrders = (long) order2family.size();
+    summary.nFamilies = (long) family2genus.size();
+    summary.nGenera = (long) genus2species.size();
+    summary.nSpecies = (long) species2assembly.size();
+
+    string prefix = par.outputPrefix.empty() ? assemblyList : par.outputPrefix;
+    writeBenchmarkOutputs(prefix, summary, databaseAssemblies, queries);
     return 0;
+}
+
+static int appendInclusionQueries(
+    std::vector<QueryRecord> & queries,
+    std::unordered_map<std::string, TaxID> & observedAcc2taxid,
+    std::unordered_map<TaxID, std::vector<Assembly>> & species2assembly,
+    std::unordered_map<TaxID, std::vector<TaxID>> & genus2species)
+{
+    std::srand(4);
+
+    /* Subspecies inclusion test: two subspecies (assemblies) of the same species. */
+    cout << "Making query sets for subspecies inclusion test..." << endl;
+
+    // Find species with multiple assemblies(subspecies)
+    vector<TaxID> speciesWithMultipleAssemblies;
+    for (auto &species : species2assembly) {
+        if (species.second.size() > 1) {
+            speciesWithMultipleAssemblies.push_back(species.first);
+        }
+    }
+    cout << "Found " << speciesWithMultipleAssemblies.size() << " species with multiple assemblies. A random eigth will be used." << endl;
+
+    std::mt19937 rng1(0);
+    std::shuffle(speciesWithMultipleAssemblies.begin(), speciesWithMultipleAssemblies.end(), rng1);
+    std::size_t eigth = speciesWithMultipleAssemblies.size() / 8; // floor if odd
+    std::vector<TaxID> selectedSpecies(speciesWithMultipleAssemblies.begin(),
+                                  speciesWithMultipleAssemblies.begin() + eigth);
+
+    // Select two assemblies per species with multiple assemblies
+    for (auto &species : selectedSpecies) {
+        if (species2assembly[species].size() < 2) {
+            cerr << "Error: species " << species << " has less than 2 assemblies." << endl;
+            return 1;
+        }
+        int idx1 = rand() % species2assembly[species].size();
+        int idx2 = rand() % species2assembly[species].size();
+        while (idx2 == idx1) {
+            idx2 = rand() % species2assembly[species].size();
+        }
+        int size = (int) species2assembly[species].size();
+        for (int idx : {idx1, idx2}) {
+            const string & query = species2assembly[species][idx].name;
+            queries.push_back({query, "subspeciesInclusionPair", "species",
+                               observedAcc2taxid[query], species, "species", size});
+        }
+    }
+
+    /* Species inclusion test: two species of the same genus. */
+    cout << "Making query sets for species inclusion test..." << endl;
+
+    // Find genera with multiple species
+    vector<TaxID> genusWithMultipleSpecies;
+    for (auto &genus : genus2species) {
+        if (genus.second.size() > 1) {
+            genusWithMultipleSpecies.push_back(genus.first);
+        }
+    }
+    cout << "Found " << genusWithMultipleSpecies.size() << " genera with multiple species. A random quater will be used." << endl;
+
+    std::mt19937 rng(0);
+    std::shuffle(genusWithMultipleSpecies.begin(), genusWithMultipleSpecies.end(), rng);
+    std::size_t quater2 = genusWithMultipleSpecies.size() / 4; // floor if odd
+    std::vector<TaxID> selectedGenera(genusWithMultipleSpecies.begin(),
+                                  genusWithMultipleSpecies.begin() + quater2);
+
+    // Select two species per genus with multiple species
+    for (auto &genus : selectedGenera) {
+        if (genus2species[genus].size() < 2) {
+            cerr << "Error: genus " << genus << " has less than 2 species." << endl;
+            return 1;
+        }
+        int idx1 = rand() % genus2species[genus].size();
+        int idx2 = rand() % genus2species[genus].size();
+        while (idx2 == idx1) {
+            idx2 = rand() % genus2species[genus].size();
+        }
+        int species1 = genus2species[genus][idx1];
+        int species2 = genus2species[genus][idx2];
+        if (species1 == species2) {
+            cerr << "Error: selected species are the same for genus " << genus << endl;
+            return 1;
+        }
+        // Choose one assembly from each species
+        idx1 = rand() % species2assembly[species1].size();
+        idx2 = rand() % species2assembly[species2].size();
+        int size = (int) genus2species[genus].size();
+        const string & q1 = species2assembly[species1][idx1].name;
+        const string & q2 = species2assembly[species2][idx2].name;
+        queries.push_back({q1, "speciesInclusionPair", "genus", observedAcc2taxid[q1], genus, "genus", size});
+        queries.push_back({q2, "speciesInclusionPair", "genus", observedAcc2taxid[q2], genus, "genus", size});
+    }
+
+    cout << "Query sets for inclusion tests created." << endl;
+    return 0;
+}
+
+static void writeBenchmarkOutputs(
+    const std::string & prefix,
+    const BenchmarkSummary & summary,
+    const std::vector<std::string> & databaseAssemblies,
+    const std::vector<QueryRecord> & queries)
+{
+    string databaseFile = prefix + ".database";
+    string queryFile = prefix + ".query.tsv";
+    string summaryFile = prefix + ".summary";
+
+    ofstream db(databaseFile);
+    for (auto &assembly : databaseAssemblies) {
+        db << assembly << "\n";
+    }
+    db.close();
+
+    ofstream q(queryFile);
+    q << "Accession\tCategory\tExpectedRank\tQueryTaxID\tSubjectTaxID\tSubjectRank\tSubjectSize\n";
+    for (auto &r : queries) {
+        q << r.accession << "\t" << r.category << "\t" << r.expectedRank << "\t"
+          << r.queryTaxid << "\t" << r.subjectTaxid << "\t" << r.subjectRank << "\t"
+          << r.subjectSize << "\n";
+    }
+    q.close();
+
+    // Aggregate the manifest per category: query-genome rows and distinct
+    // subjects (excluded taxa, or pairs for the inclusion categories).
+    unordered_map<string, long> rows;
+    unordered_map<string, unordered_set<TaxID>> subjects;
+    for (auto &r : queries) {
+        rows[r.category]++;
+        subjects[r.category].insert(r.subjectTaxid);
+    }
+    auto nRows = [&](const string &c) { return rows.count(c) ? rows[c] : 0L; };
+    auto nSubj = [&](const string &c) { return subjects.count(c) ? (long) subjects[c].size() : 0L; };
+
+    long databaseGenomes = (long) databaseAssemblies.size();
+    long excludedGenomes = summary.totalGenomes - databaseGenomes;
+
+    ofstream s(summaryFile);
+    s << "# totals\n";
+    s << "total_genomes\t" << summary.totalGenomes << "\n";
+    s << "database_genomes\t" << databaseGenomes << "\n";
+    s << "excluded_genomes\t" << excludedGenomes << "\n";
+    s << "n_orders\t" << summary.nOrders << "\n";
+    s << "n_families\t" << summary.nFamilies << "\n";
+    s << "n_genera\t" << summary.nGenera << "\n";
+    s << "n_species\t" << summary.nSpecies << "\n";
+    s << "\n# per-rank exclusion / inclusion\n";
+    s << "Rank\tExcludedTaxa\tExclQueryGenomes\tInclusionPairs\tInclQueryGenomes\n";
+    s << "family\t"     << nSubj("familyExclusion")     << "\t" << nRows("familyExclusion")     << "\t-\t-\n";
+    s << "genus\t"      << nSubj("genusExclusion")      << "\t" << nRows("genusExclusion")      << "\t-\t-\n";
+    s << "species\t"    << nSubj("speciesExclusion")    << "\t" << nRows("speciesExclusion")    << "\t"
+      << nSubj("speciesInclusionPair")    << "\t" << nRows("speciesInclusionPair")    << "\n";
+    s << "subspecies\t" << nSubj("subspeciesExclusion") << "\t" << nRows("subspeciesExclusion") << "\t"
+      << nSubj("subspeciesInclusionPair") << "\t" << nRows("subspeciesInclusionPair") << "\n";
+    s.close();
+
+    cout << "Wrote " << databaseGenomes << " database genome(s) to " << databaseFile << endl;
+    cout << "Wrote " << queries.size() << " query genome(s) to " << queryFile << endl;
+    cout << "Wrote summary to " << summaryFile << endl;
 }
 
 int virusBenchmarkSet(const Parameters & par) {
@@ -602,13 +751,7 @@ int virusBenchmarkSet(const Parameters & par) {
     }
     fclose(handle);
 
-    string excludedFamilyList = assemblyList + ".excludedFamilies";
-    string excludedGenusList = assemblyList + ".excludedGenera";
-    string excludedSpeciesList = assemblyList + ".excludedSpecies";
-    string excludedAssemblyList = assemblyList + ".excludedAssembly";
-    string includedAssemblyList = assemblyList + ".includedAssembly";
-    string databaseAssemblyList = assemblyList + ".databaseAssembly";
-    string totalExludedAssemblyList = assemblyList + ".totalExcludedAssembly";    
+    vector<QueryRecord> queries;
 
     cout << "Making observedAcc2taxid map...";
     std::unordered_map<std::string, TaxID> observedAcc2taxid;
@@ -712,15 +855,13 @@ int virusBenchmarkSet(const Parameters & par) {
     vector<TaxID> excludedSpecies;
     
     // *** Family Exclusion ***
-    ofstream excludedFamilyListFile(excludedFamilyList);
-    // 1. Find orders with multiple families  
+    // 1. Find orders with multiple families
     vector<TaxID> orderWithMultipleFamilies;
     for (auto &order : order2family) {
         if (order.second.size() > 1) {
             orderWithMultipleFamilies.push_back(order.first);
         }
     }
-    excludedFamilyListFile << "Orders with multiple families: " << orderWithMultipleFamilies.size() << endl;
     // 2. Randomly choose n orders with multiple families without replacement
     vector<TaxID> selectedOrders;
     int n = int(orderWithMultipleFamilies.size() / 3);
@@ -731,7 +872,6 @@ int virusBenchmarkSet(const Parameters & par) {
         orderWithMultipleFamilies.erase(orderWithMultipleFamilies.begin() + idx);
     }
     // 3. Randomly choose one family from each selected order
-    excludedFamilyListFile << "Order\tOrder_Size\tExcluded_Family\tFamily_Size\tAssemblies\tQuery_Assembly" << endl;
     vector<Assembly> excludedFamilyAssemblies;
     for (auto &order : selectedOrders) {
         currentExcludedAssemblies.clear();
@@ -739,7 +879,6 @@ int virusBenchmarkSet(const Parameters & par) {
         int idx = random % order2family[order].size();
         TaxID excludingFamily = order2family[order][idx];
         excludedFamilies.push_back(excludingFamily);
-        excludedFamilyListFile << order << "\t" << order2family[order].size() << "\t" << excludingFamily  << "\t" << family2genus[excludingFamily].size() << "\t";
         // Exclude the selected family
         for (size_t i = 0; i < family2genus[excludingFamily].size(); i++) {
             TaxID genus = family2genus[excludingFamily][i];
@@ -752,24 +891,17 @@ int virusBenchmarkSet(const Parameters & par) {
                     totalExcludedAssemblies.push_back(assemblyName);
                     excludedFamilyAssemblies.push_back(species2assembly[species][k]);
                     currentExcludedAssemblies.push_back(assemblyName);
-                    if (i == family2genus[excludingFamily].size() - 1 
-                        && j == genus2species[genus].size() - 1
-                        && k == species2assembly[species].size() - 1) {
-                        excludedFamilyListFile << assemblyName << "\t";
-                    } else {
-                        excludedFamilyListFile << assemblyName << ",";
-                    }
-                 }    
+                 }
             }
         }
-        // randomly choose one assembly from the current excluded assemblies
-        idx = random % currentExcludedAssemblies.size();
-        excludedFamilyListFile << currentExcludedAssemblies[idx] << endl;
+        // Report every excluded member genome as a family-exclusion query candidate.
+        for (const string & member : currentExcludedAssemblies) {
+            queries.push_back({member, "familyExclusion", "order", observedAcc2taxid[member],
+                               excludingFamily, "family", (int) family2genus[excludingFamily].size()});
+        }
     }
-    excludedFamilyListFile.close();
 
     // *** Genus Exclusion ***
-    ofstream excludedGenusListFile(excludedGenusList);
     // 1. Find families with multiple genera
     vector<TaxID> familyWithMultipleGenera;
     for (auto &family : family2genus) {
@@ -780,7 +912,6 @@ int virusBenchmarkSet(const Parameters & par) {
             familyWithMultipleGenera.push_back(family.first);
         }
     }
-    excludedGenusListFile << "Families with multiple genera: " << familyWithMultipleGenera.size() << endl;
     // 2. Randomly choose n families with multiple genera without replacement
     n = int(familyWithMultipleGenera.size() / 3);
     cout << "Excluding " << n << " genera" << endl;
@@ -791,7 +922,6 @@ int virusBenchmarkSet(const Parameters & par) {
         familyWithMultipleGenera.erase(familyWithMultipleGenera.begin() + idx);
     }
     // 3. Randomly choose one genus from each selected family
-    excludedGenusListFile << "Family\tFamily_Size\tExcluded_Genus\tGenus_Size\tAssemblies\tQuery_Assembly" << endl;
     vector<Assembly> excludedGenusAssemblies;
     for (auto &family : selectedFamilies) {
         currentExcludedAssemblies.clear();
@@ -799,25 +929,20 @@ int virusBenchmarkSet(const Parameters & par) {
         int idx = random % family2genus[family].size();
         TaxID excludingGenus = family2genus[family][idx];
         excludedGenera.push_back(excludingGenus);
-        excludedGenusListFile << family << "\t" << family2genus[family].size() << "\t" << excludingGenus  << "\t" << genus2species[excludingGenus].size() << "\t";
         for (size_t i = 0; i < genus2species[excludingGenus].size(); i++) {
             excludedSpecies.push_back(genus2species[excludingGenus][i]);
             for (size_t j = 0; j < species2assembly[genus2species[excludingGenus][i]].size(); j++) {
                 totalExcludedAssemblies.push_back(species2assembly[genus2species[excludingGenus][i]][j].name);
                 excludedGenusAssemblies.push_back(species2assembly[genus2species[excludingGenus][i]][j]);
                 currentExcludedAssemblies.push_back(species2assembly[genus2species[excludingGenus][i]][j].name);
-                if (i == genus2species[excludingGenus].size() - 1 && j == species2assembly[genus2species[excludingGenus][i]].size() - 1) {
-                    excludedGenusListFile << species2assembly[genus2species[excludingGenus][i]][j].name << "\t";
-                } else {
-                    excludedGenusListFile << species2assembly[genus2species[excludingGenus][i]][j].name << ",";
-                }
             }
         }
-        // randomly choose one assembly from the current excluded assemblies
-        idx = random % currentExcludedAssemblies.size();
-        excludedGenusListFile << currentExcludedAssemblies[idx] << endl;
+        // Report every excluded member genome as a genus-exclusion query candidate.
+        for (const string & member : currentExcludedAssemblies) {
+            queries.push_back({member, "genusExclusion", "family", observedAcc2taxid[member],
+                               excludingGenus, "genus", (int) genus2species[excludingGenus].size()});
+        }
     }
-    excludedGenusListFile.close();
 
     // *** Species Exclusion ***
     // 1. Find genera with multiple species
@@ -842,9 +967,6 @@ int virusBenchmarkSet(const Parameters & par) {
     }
 
     // For each selected genus, randomly choose one species to exclude
-    ofstream excludedSpeciesListFile(excludedSpeciesList);
-    excludedSpeciesListFile << "Genera with multiple species: " << genusWithMultipleSpecies.size() << endl;
-    excludedSpeciesListFile << "Genus\tGenus_Size\tExcluded_Species\tSpecies_Size\tAssemblies\tQuery_Assembly" << endl;
     vector<Assembly> excludedSpeciesAssemblies;
     for (auto &genus : selectedGenera) {
         currentExcludedAssemblies.clear();
@@ -852,22 +974,17 @@ int virusBenchmarkSet(const Parameters & par) {
         int idx = random % genus2species[genus].size();
         TaxID excludingSpecies = genus2species[genus][idx];
         excludedSpecies.push_back(excludingSpecies);
-        excludedSpeciesListFile << genus << "\t" << genus2species[genus].size() << "\t" << excludingSpecies << "\t" << species2assembly[excludingSpecies].size() << "\t";
         for (size_t i = 0; i < species2assembly[excludingSpecies].size(); i++) {
             currentExcludedAssemblies.push_back(species2assembly[excludingSpecies][i].name);
             totalExcludedAssemblies.push_back(species2assembly[excludingSpecies][i].name);
             excludedSpeciesAssemblies.push_back(species2assembly[excludingSpecies][i]);
-            if (i == species2assembly[excludingSpecies].size() - 1) {
-                excludedSpeciesListFile << species2assembly[excludingSpecies][i].name << "\t";
-            } else {
-                excludedSpeciesListFile << species2assembly[excludingSpecies][i].name << ",";
-            }
         }
-        // randomly choose one assembly from the current excluded assemblies
-        idx = random % currentExcludedAssemblies.size();
-        excludedSpeciesListFile << currentExcludedAssemblies[idx] << endl;
+        // Report every excluded member genome as a species-exclusion query candidate.
+        for (const string & member : currentExcludedAssemblies) {
+            queries.push_back({member, "speciesExclusion", "genus", observedAcc2taxid[member],
+                               excludingSpecies, "species", (int) species2assembly[excludingSpecies].size()});
+        }
     }
-    excludedSpeciesListFile.close();
 
     for (auto &excludedGenus : excludedGenera) {
         for (auto & species : genus2species[excludedGenus]) {
@@ -898,79 +1015,34 @@ int virusBenchmarkSet(const Parameters & par) {
         speciesWithMultipleAssemblies.erase(speciesWithMultipleAssemblies.begin() + idx);
     }
 
-    // For each selected species, randomly choose one assembly to exclude    
-    ofstream excludedAssemblyListFile(excludedAssemblyList);
-    excludedAssemblyListFile << "Species with multiple assemblies: " << speciesWithMultipleAssemblies.size() << endl;
-    excludedAssemblyListFile << "Species\tSpecies_Size\tExcluded_Assemblies" << endl;
+    // For each selected species, randomly choose one assembly to exclude; its
+    // species stays in the DB via siblings, so it is the subspecies-exclusion query.
     vector<Assembly> excludedSubspeciesAssemblies;
     for (auto &species : selectedSpecies) {
         int idx = rand() % species2assembly[species].size();
-        totalExcludedAssemblies.push_back(species2assembly[species][idx].name);
+        const string & query = species2assembly[species][idx].name;
+        totalExcludedAssemblies.push_back(query);
         excludedSubspeciesAssemblies.push_back(species2assembly[species][idx]);
-        excludedAssemblyListFile << species << "\t" << species2assembly[species].size() << "\t" << species2assembly[species][idx].name << endl;
+        queries.push_back({query, "subspeciesExclusion", "species", observedAcc2taxid[query],
+                           species, "species", (int) species2assembly[species].size()});
     }
-    excludedAssemblyListFile.close();
-
-    // For remaining species with multiple assemblies, randomly choose one assembly to include
-    ofstream includedAssemblyListFile(includedAssemblyList);
-    includedAssemblyListFile << "Species\tSpecies_Size\tIncluded_Assemblies" << endl;
-    vector<string> includedAssemblies;
-    for (auto &species : speciesWithMultipleAssemblies) {
-        int idx = rand() % species2assembly[species].size();
-        includedAssemblies.push_back(species2assembly[species][idx].name);
-        includedAssemblyListFile << species << "\t" << species2assembly[species].size() << "\t" << species2assembly[species][idx].name << endl;
-    }
-    ofstream totalExcludedAssemblyListFile(totalExludedAssemblyList);
-    for (auto &assembly : totalExcludedAssemblies) {
-        totalExcludedAssemblyListFile << assembly << "\n";
-    }
-    totalExcludedAssemblyListFile.close();
     cout << "Total excluded assemblies: " << totalExcludedAssemblies.size() << endl;
-    
 
-    // Write database assembly list
-    ofstream databaseAssemblyListFile(databaseAssemblyList);
+    // Compute the database assembly list (everything not excluded).
     vector<Assembly> databaseAssemblies;
+    vector<string> databaseAssemblyNames;
     databaseAssemblies.reserve(totalAssemblyAccessions.size());
     for (auto &assembly : assemblies) {
         if (find(totalExcludedAssemblies.begin(), totalExcludedAssemblies.end(), assembly.name) == totalExcludedAssemblies.end()) {
-            databaseAssemblyListFile << assembly.name << "\n";
             databaseAssemblies.push_back(assembly);
+            databaseAssemblyNames.push_back(assembly.name);
         }
     }
-    databaseAssemblyListFile.close();
 
     // Validate the database assembly list
-
-    // Validate included assemblies
-    cout << "Validating included assemblies ..." << flush;
-    for (size_t i = 0; i < includedAssemblies.size(); i++) {
-        TaxID includedTaxid = observedAcc2taxid[includedAssemblies[i]];
-        int speciesCount = 0;
-        bool found = false;
-        for (auto &assembly : databaseAssemblies) {
-            if (assembly.name == includedAssemblies[i]) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            cout << "Error: " << includedAssemblies[i] << " is not a valid inclusion. Not in database assembly list." << endl;
-            return 1;
-        }
-        TaxID includedSpeciesId = taxonomy.getTaxIdAtRank(includedTaxid, "species");
-        for (size_t j = 0; j < databaseAssemblies.size(); j++) {
-            if (includedSpeciesId == databaseAssemblies[j].speciesId) {
-                speciesCount++;
-                break;
-            } 
-        }
-        if (speciesCount == 0) {
-            cout << "Error: " << includedAssemblies[i] << " is not a valid inclusion. No Species rank LCA." << endl;
-            return 1;
-        }
-    }
-    cout << "done." << endl;
+    if (par.skipValidation) {
+        cout << "Skipping validation (--skip-validation)." << endl;
+    } else {
 
     // Validate Family Exclusion
     cout << "Validating excluded family..." << flush;
@@ -1077,6 +1149,16 @@ int virusBenchmarkSet(const Parameters & par) {
         }
     }
     cout << "done." << endl;
+    } // end validation (--skip-validation)
 
+    BenchmarkSummary summary;
+    summary.totalGenomes = (long) totalAssemblyAccessions.size();
+    summary.nOrders = (long) order2family.size();
+    summary.nFamilies = (long) family2genus.size();
+    summary.nGenera = (long) genus2species.size();
+    summary.nSpecies = (long) species2assembly.size();
+
+    string prefix = par.outputPrefix.empty() ? assemblyList : par.outputPrefix;
+    writeBenchmarkOutputs(prefix, summary, databaseAssemblyNames, queries);
     return 0;
 }

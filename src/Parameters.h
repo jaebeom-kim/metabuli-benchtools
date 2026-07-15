@@ -28,6 +28,12 @@ struct Parameters {
     // --- makeBenchmarkSet ---
     unsigned int randomSeed = 0;   // --seed
     std::string assacc2taxid;      // --acc2taxid : accession->taxid map (virus mode)
+    bool skipValidation = false;   // --skip-validation : skip exclusion/inclusion checks
+    std::string outputPrefix;      // --prefix : output file prefix (default: <assemblyList>)
+
+    // --- sample-queries ---
+    int sampleNumber = 0;          // --number : total sample size across categories
+    std::string sampleRatio;       // --ratio  : 6 comma-separated category weights
 };
 
 // Parse argv (starting at `start`) into `par`. Recognized flags are consumed;

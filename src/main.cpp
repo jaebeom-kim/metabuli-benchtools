@@ -7,7 +7,7 @@
 // Tool entry points (defined in src/tools/*.cpp).
 int grade(const Parameters &par);
 int makeBenchmarkSet(const Parameters &par);
-int makeInclusionQuerySet(const Parameters &par);
+int sampleQueries(const Parameters &par);
 
 namespace {
 
@@ -39,21 +39,34 @@ const std::vector<Tool> TOOLS = {
 
     {"makeBenchmarkSet", 2,
      "makeBenchmarkSet <assemblyList> <taxonomyDir> [options]\n"
-     "    Build exclusion/inclusion benchmark sets from an assembly list.\n"
+     "    Build exclusion + inclusion benchmark sets from an assembly list.\n"
+     "    Emits the family/genus/species/subspecies exclusion sets, the database\n"
+     "    assembly list, and the subspecies/species inclusion query sets (gtdb).\n"
      "    <assemblyList>        file listing one assembly accession per line\n"
      "    <taxonomyDir>         directory with names.dmp, nodes.dmp, merged.dmp\n"
      "  Options:\n"
      "    --test-type STR       gtdb | virus (default: gtdb)\n"
      "    --seed INT            random seed (default: 0)\n"
-     "    --acc2taxid FILE      accession->taxid mapping file (required for --test-type virus)",
+     "    --acc2taxid FILE      accession->taxid mapping file (required for --test-type virus)\n"
+     "    --prefix STR          output file prefix (default: <assemblyList>)\n"
+     "    --skip-validation     skip the exclusion/inclusion validation checks\n"
+     "  Outputs: <prefix>.database, <prefix>.query.tsv, <prefix>.summary",
      makeBenchmarkSet},
 
-    {"makeInclusionQuerySet", 2,
-     "makeInclusionQuerySet <assemblyList> <taxonomyDir>\n"
-     "    Build subspecies/species inclusion query sets from an assembly list.\n"
-     "    <assemblyList>        file listing one assembly accession per line\n"
-     "    <taxonomyDir>         directory with names.dmp, nodes.dmp, merged.dmp",
-     makeInclusionQuerySet},
+    {"sample-queries", 2,
+     "sample-queries <queryTsv> <outPrefix> [options]\n"
+     "    Sample a diversity-maximizing subset of query genomes from a\n"
+     "    makeBenchmarkSet .query.tsv manifest (round-robin over SubjectTaxID).\n"
+     "    <queryTsv>            the .query.tsv manifest from makeBenchmarkSet\n"
+     "    <outPrefix>           output prefix (required)\n"
+     "  Options:\n"
+     "    --number INT          total sample size across categories (required)\n"
+     "    --ratio a,b,c,d,e,f   6 category weights: familyExcl,genusExcl,speciesExcl,\n"
+     "                          subspeciesExcl,speciesIncl,subspeciesIncl (default: all 1);\n"
+     "                          the inclusion weights count pairs (both members kept)\n"
+     "    --seed INT            random seed (default: 0)\n"
+     "  Outputs: <outPrefix>.query.tsv, <outPrefix>.summary",
+     sampleQueries},
 };
 
 void printUsage(const std::string &program) {
