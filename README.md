@@ -1,5 +1,7 @@
 # metabuli-benchtools
 
+Benchmarking and grading tools for metagenomic taxonomic classification and profiling.
+
 Standalone benchmark & grading tools extracted from
 [Metabuli](https://github.com/steineggerlab/Metabuli). This project bundles the
 three tools that are useful on their own for building benchmark sets and scoring
@@ -140,11 +142,24 @@ simulated (filter by `Category` for a specific test). `<assemblyList>.database`
 lists the accessions that instead go into the classifier database.
 
 [MGSIM](https://github.com/nick-youngblut/MGSIM) turns a genome table into
-simulated Illumina / PacBio / Nanopore metagenomes. It is an external Python
-tool — install it separately:
+simulated Illumina / PacBio / Nanopore metagenomes (its read simulators — ART,
+SimLord, NanoSim-H — model platform-specific sequencing error). A pinned
+[fork](https://github.com/jaebeom-kim/MGSIM) is bundled as the
+`third_party/MGSIM` submodule; install it into a conda env named `mgsim` with:
 
 ```sh
-pip install MGSIM        # or: conda env create -f MGSIM/environment.yml
+scripts/install-mgsim.sh          # inits the submodule + builds the 'mgsim' conda env
+conda activate mgsim
+```
+
+The script uses `mamba` when available (falling back to `conda`) and pip-installs
+MGSIM from the submodule. If you cloned without `--recurse-submodules`, it runs
+`git submodule update --init` for you. To do it by hand:
+
+```sh
+git submodule update --init third_party/MGSIM
+mamba env create -n mgsim -f third_party/MGSIM/environment.yml
+conda activate mgsim && pip install ./third_party/MGSIM
 ```
 
 `scripts/benchtools_to_mgsim.py` bridges a benchtools accession list into the
@@ -214,7 +229,10 @@ src/
   Assembly.h          the Assembly struct (from Metabuli's common.h)
   compat/             minimal drop-in replacements for mmseqs headers
   taxonomy/           NcbiTaxonomy + TaxonomyWrapper (ported)
-  tools/              grade, makeBenchmarkSet
+  tools/              grade, makeBenchmarkSet, sampleQueries
 scripts/
   benchtools_to_mgsim.py   accession list -> MGSIM genome table
+  install-mgsim.sh         build the bundled MGSIM into a conda env
+third_party/
+  MGSIM/              pinned MGSIM fork (git submodule) for read simulation
 ```

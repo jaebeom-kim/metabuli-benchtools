@@ -1,0 +1,3 @@
+[submodule "third_party/MGSIM"]
+	path = third_party/MGSIM
+	url = https://github.com/jaebeom-kim/MGSIM.git
