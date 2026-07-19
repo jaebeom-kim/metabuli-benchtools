@@ -5,6 +5,7 @@
 #include <unordered_set>
 #include <iostream>
 #include <fstream>
+#include <cstring>
 #include "Util.h"
 static const std::map<std::string, std::string> ExtendedShortRanks = 
                                                 {{"subspecies", "ss" },

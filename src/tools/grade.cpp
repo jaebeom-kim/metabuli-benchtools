@@ -6,6 +6,8 @@
 #include <iostream>
 #include <regex>
 #include <cstdint>
+#include <cstring>
+#include <cstdlib>
 
 #ifdef OPENMP
 #include <omp.h>

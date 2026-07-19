@@ -10,6 +10,9 @@
 #include <cassert>
 #include <unordered_set>
 #include <fstream>
+#include <cstring>
+#include <cstdlib>
+#include <cstdio>
 
 int **TaxonomyWrapper::makeMatrix(size_t maxNodes) {
     size_t dimension = maxNodes * 2;

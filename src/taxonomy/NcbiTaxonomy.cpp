@@ -9,7 +9,11 @@
 #include <algorithm>
 #include <cassert>
 #include <cfloat>
+#include <climits>
 #include <cmath>
+#include <cstring>
+#include <cstdlib>
+#include <cstdio>
 #include <sys/stat.h>
 
 // File-local stand-in for the mmseqs Parameters aggregation-mode constants.
