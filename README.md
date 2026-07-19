@@ -11,6 +11,44 @@ It splits a set of assemblies into one reference set and six query sets — fami
 3. MGSIM — simulate reads from the query genomes.
 4. `grade` / `grade-composition` — score per-read classification and profiling results.
 
+```mermaid
+flowchart TD
+    AL["assembly list"] --> SPLIT[["split"]]
+    TX["taxonomy"] --> SPLIT
+    A2T["acc2taxid"] --> SPLIT
+
+    SPLIT --> DB[".database"]
+    SPLIT --> QT[".query.tsv"]
+
+    QT --> SQ[["sample-queries"]]
+    SQ --> SQO["sampled .query.tsv"]
+
+    GF["genome FASTAs"] --> B2M[["benchtools_to_mgsim.py"]]
+    SQO --> B2M
+    B2M --> GTAB["MGSIM genome table"]
+
+    GTAB --> MC(["MGSIM communities"])
+    MC --> TRUTH["ground-truth abundance"]
+    GTAB --> MR(["MGSIM reads"])
+    TRUTH --> MR
+    MR --> RD["simulated reads"]
+
+    DB --> CLF(["classifier under test"])
+    RD --> CLF
+    CLF --> CR["per-read classifications"]
+    CLF --> PR["abundance profile"]
+
+    CR --> GR[["grade"]]
+    PR --> GC[["grade-composition"]]
+    TRUTH --> GC
+    SQO --> GC
+
+    GR --> GRM["precision / sensitivity / F1"]
+    GC --> GCM["L1 / Bray-Curtis / Purity / Completeness"]
+```
+
+<sub>Doubled-edge boxes are `benchtools` commands; stadium nodes are external tools (MGSIM and the classifier being benchmarked).</sub>
+
 ## Build
 
 Requires a C++17 compiler and CMake ≥ 3.10. OpenMP is optional (multi-threads grading over multiple input files).
