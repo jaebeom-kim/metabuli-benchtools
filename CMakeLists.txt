@@ -20,6 +20,7 @@ add_executable(benchtools
     src/tools/grade.cpp
     src/tools/split.cpp
     src/tools/sampleQueries.cpp
+    src/tools/gradeComposition.cpp
 )
 
 target_include_directories(benchtools PRIVATE

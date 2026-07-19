@@ -8,6 +8,7 @@
 int grade(const Parameters &par);
 int split(const Parameters &par);
 int sampleQueries(const Parameters &par);
+int gradeComposition(const Parameters &par);
 
 namespace {
 
@@ -66,6 +67,22 @@ const std::vector<Tool> TOOLS = {
      "    --seed INT            random seed (default: 0)\n"
      "  Outputs: <outPrefix>.query.tsv, <outPrefix>.summary",
      sampleQueries},
+
+    {"grade-composition", 4,
+     "grade-composition <profileList> <truthAbundance> <queryTsv> <taxonomyDir> [options]\n"
+     "    Evaluate abundance/profiling estimates against MGSIM ground-truth abundances,\n"
+     "    scoring each genome only as deep as its ExpectedRank (the ideal profile).\n"
+     "    Per (group, rank) reports mean and SD across communities of L1, Bray-Curtis,\n"
+     "    Purity, and Completeness.\n"
+     "    <profileList>         3-column TSV: group(tool)  community  Metabuli/Kraken-report\n"
+     "                          (community keys into <truthAbundance>'s Community column)\n"
+     "    <truthAbundance>      MGSIM communities *_abund.txt (cell) or *_wAbund.txt (sequence)\n"
+     "    <queryTsv>            split/sample-queries .query.tsv (Accession -> QueryTaxID, ExpectedRank)\n"
+     "    <taxonomyDir>         directory with names.dmp, nodes.dmp, merged.dmp\n"
+     "  Options:\n"
+     "    --rank STR            comma-separated ranks (default: species,genus)\n"
+     "    --min-abundance F     detection threshold as a fraction (default: 0)",
+     gradeComposition},
 };
 
 void printUsage(const std::string &program) {

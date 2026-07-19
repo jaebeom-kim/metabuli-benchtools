@@ -33,6 +33,9 @@ struct Parameters {
     // --- sample-queries ---
     int sampleNumber = 0;          // --number : total sample size across categories
     std::string sampleRatio;       // --ratio  : 6 comma-separated category weights
+
+    // --- grade-composition ---
+    double minAbundance = 0.0;      // --min-abundance : detection threshold (fraction)
 };
 
 // Parse argv (starting at `start`) into `par`. Recognized flags are consumed;
