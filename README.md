@@ -2,24 +2,18 @@
 
 Benchmarking and grading tools for metagenomic taxonomic classification and profiling.
 
-Standalone benchmark & grading tools extracted from
-[Metabuli](https://github.com/steineggerlab/Metabuli). This project bundles the
-three tools that are useful on their own for building benchmark sets and scoring
-taxonomic classification results, **without depending on the full mmseqs2
-library** — so it compiles in seconds instead of minutes.
+It splits a set of assemblies into one reference set and six query sets — family/genus/species/subspecies **exclusion** tests and species/subspecies **inclusion** tests — so you can evaluate a classifier across different levels of database completeness and taxonomic resolution.
 
-## Tools
+**Pipeline**
 
-| Command | Purpose |
-| --- | --- |
-| `grade` | Score classification results against answer sheets (precision / sensitivity / F1 per rank). |
-| `makeBenchmarkSet` | Build family/genus/species/subspecies exclusion sets, the database assembly list, and species/subspecies inclusion query pairs from an assembly list (GTDB or virus). |
-| `sample-queries` | Draw a diversity-maximizing subset of query genomes from a `makeBenchmarkSet` manifest, with per-category ratios. |
+1. `split` — partition assemblies into a reference database and query sets.
+2. `sample-queries` — draw a diversity-maximizing subset of the queries.
+3. MGSIM — simulate reads from the query genomes.
+4. `grade` — score classification and profiling results.
 
 ## Build
 
-Requires a C++17 compiler and CMake ≥ 3.10. OpenMP is optional (enables
-multi-threaded grading over multiple input files).
+Requires a C++17 compiler and CMake ≥ 3.10. OpenMP is optional (multi-threads grading over multiple input files).
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -28,211 +22,87 @@ cmake --build build -j
 
 The binary is produced at `build/benchtools`.
 
-## Usage
+---
 
+## Split assemblies into reference and query sets
+
+`split` builds the reference database list and the six query sets in a single run.
+
+### Input
+- `<assembly list>` — one assembly accession (GCF_/GCA_) per line.
+- `<taxonomy dir>` — directory with `names.dmp`, `nodes.dmp`, `merged.dmp`.
+- `<assacc2taxid>` — assembly accession → taxid mapping, `accession<TAB>taxid` per line.
+
+### Usage
 ```sh
-benchtools <command> [options]
-benchtools <command> --help     # command-specific usage
+benchtools split <assembly list> <taxonomy dir> <assacc2taxid> <output prefix> [--seed N] [--skip-validation]
 ```
 
-### grade
+### Output
+- `<output prefix>.database` — accessions to build the reference database, one per line.
+- `<output prefix>.query.tsv` — the query assemblies for all six categories, with grading metadata.
+- `<output prefix>.summary` — assembly/taxa counts and a per-rank exclusion/inclusion breakdown.
+
+#### `.query.tsv` columns
+
+| Column | Meaning |
+| --- | --- |
+| `Accession` | the query assembly |
+| `Category` | which test this query belongs to (see below) |
+| `ExpectedRank` | deepest rank a correct call can reach given the database |
+| `QueryTaxID` | taxid of the query assembly |
+| `SubjectTaxID` | the taxon defining the case (excluded/shared); paired rows share it |
+| `SubjectRank` | rank of `SubjectTaxID` |
+| `SubjectSize` | number of direct members of `SubjectTaxID` |
+
+**Exclusion** — `familyExclusion`, `genusExclusion`, `speciesExclusion`, `subspeciesExclusion`. The query's taxon at that rank is held out of the database while its parent remains, so a correct call reaches `ExpectedRank` = order / family / genus / species respectively. Every genome of the held-out taxon is listed.
+
+**Inclusion** — `speciesInclusionPair`, `subspeciesInclusionPair`. A pair of database genomes sharing a genus / species (`SubjectTaxID`). The query's own species is in the database, so `ExpectedRank` = species; the shared taxon is a same-genus / same-species distractor. The two members of a pair share `SubjectTaxID`.
+
+## Sample query sets
+
+`sample-queries` draws a subset of `<query.tsv>`, maximizing the number of distinct taxa sampled within each category.
 
 ```sh
-benchtools grade <classificationList> <mappingList> <taxonomyDir> [options]
+benchtools sample-queries <query.tsv> <output prefix> --number N [--ratio f,g,s,ss,si,ssi] [--seed N]
 ```
 
-- `<classificationList>` — file listing one classification-result path per line.
-- `<mappingList>` — file listing one accession→taxid answer-sheet path per line
-  (aligned line-by-line with the classification list).
-- `<taxonomyDir>` — directory containing `names.dmp`, `nodes.dmp`, `merged.dmp`.
+- `--number` — total number of queries to sample.
+- `--ratio` — six weights for family/genus/species/subspecies exclusion and species/subspecies inclusion (default all `1`). Inclusion weights count pairs.
 
-Key options: `--test-type` (`gtdb` [default], `gtdb-amgsim`, `cami`, `cami-long`,
-`cami-euk`, `hiv`, `hiv-ex`, `over`, `kapk`), `--rank`, `--read-id-col`,
-`--tax-id-col`, `--print-cols`, `--skip-secondary`, `--threads`.
+It writes `<output prefix>.query.tsv` (the sampled rows) and `<output prefix>.summary`.
 
-### makeBenchmarkSet
+## Simulate metagenomic reads with MGSIM
 
+[MGSIM](https://github.com/nick-youngblut/MGSIM) simulates Illumina / PacBio / Nanopore reads with platform-specific error models (ART / SimLord / NanoSim-H). A pinned fork is bundled as the `third_party/MGSIM` submodule.
+
+### Install MGSIM
 ```sh
-benchtools makeBenchmarkSet <assemblyList> <taxonomyDir> [--test-type gtdb|virus] [--seed N] [--acc2taxid FILE] [--prefix STR] [--skip-validation]
-```
-
-`--acc2taxid` is required for `--test-type virus`. `--skip-validation` skips the
-per-query exclusion/inclusion sanity checks (faster on large sets; the output
-files are unchanged). `--prefix` sets the output path prefix (default:
-`<assemblyList>`).
-
-A single run writes three files, named `<prefix>.*` (with `<prefix>` defaulting to
-`<assemblyList>`):
-
-- **`.database`** — the assemblies to build the classifier database from
-  (everything not held out), one accession per line.
-- **`.summary`** — totals (input / database / excluded genome counts and the
-  number of orders/families/genera/species in the input tree) plus a per-rank
-  table of exclusion/inclusion counts.
-- **`.query.tsv`** — one row per query assembly, with the answer-key metadata
-  needed to grade it. Columns:
-
-  | Column | Meaning |
-  | --- | --- |
-  | `Accession` | the query assembly |
-  | `Category` | which test this query belongs to (see below) |
-  | `ExpectedRank` | deepest rank a correct call can reach given the database |
-  | `QueryTaxID` | taxid of the query assembly itself |
-  | `SubjectTaxID` | the taxon defining the case (excluded/shared); paired rows share it |
-  | `SubjectRank` | rank of `SubjectTaxID` |
-  | `SubjectSize` | number of direct members of `SubjectTaxID` |
-
-  `Category` is one of `familyExclusion`, `genusExclusion`, `speciesExclusion`,
-  `subspeciesExclusion` (a held-out taxon whose siblings remain, so a correct
-  call reaches `ExpectedRank` = order/family/genus/species respectively); or
-  `speciesInclusionPair` / `subspeciesInclusionPair` (GTDB only — two species of
-  the same genus / two genomes of the same species, sharing `SubjectTaxID`).
-
-For `familyExclusion`, `genusExclusion`, and `speciesExclusion`, the manifest
-lists **every member genome** of each excluded taxon (the whole taxon is out of
-the database, so all its genomes are valid queries). Rows are grouped by
-`SubjectTaxID` so a subset can be sampled afterward with `sample-queries` (below).
-
-> Earlier versions wrote ~11 files and had a separate `makeInclusionQuerySet`
-> command; both are folded into this single command and its `.database` /
-> `.query.tsv` / `.summary` output. The
-> database composition is unchanged; the exclusion query sets now enumerate all
-> excluded genomes (earlier versions reported one sampled query per excluded
-> taxon), and the single per-species inclusion set was dropped in favor of the
-> inclusion pairs.
-
-### sample-queries
-
-```sh
-benchtools sample-queries <queryTsv> <outPrefix> --number N [--ratio a,b,c,d,e,f] [--seed S]
-```
-
-Draws a subset of query genomes from a `makeBenchmarkSet` `.query.tsv` manifest.
-`<outPrefix>` is required; the tool writes two files:
-
-- **`<outPrefix>.query.tsv`** — the sampled rows, same columns as the input.
-- **`<outPrefix>.summary`** — the input path, the sampling parameters
-  (`number` / `ratio` / `seed`), a per-category sampling table
-  (`Available` / `Requested` / `Sampled`), and any capping warnings.
-
-`--number` is the total sample size and `--ratio` is six comma-separated weights in
-the order `familyExcl,genusExcl,speciesExcl,subspeciesExcl,speciesIncl,subspeciesIncl`
-(default all `1`) that split the total across categories.
-
-Within each category the sampler **maximizes diversity across taxa** by
-round-robin over `SubjectTaxID` groups — because `makeBenchmarkSet` excludes one
-taxon per parent, this spreads picks over as many distinct parents as possible
-(e.g. species-exclusion queries come from as many different genera as available).
-
-The two inclusion categories are pairs: their weight counts **pairs**, and both
-members of a chosen pair are always kept together (each pair adds two rows). If a
-category has fewer units than its target, all are taken and a warning is recorded
-(in the summary and on stderr), so the total may fall short of `--number`.
-
-```sh
-benchtools sample-queries assemblies.list.query.tsv sample1 --number 300 --ratio 1,2,3,4,5,6 --seed 0
-# -> sample1.query.tsv (feed its column 0 to the MGSIM bridge below) + sample1.summary
-```
-
-## Simulating metagenomic samples with MGSIM
-
-`makeBenchmarkSet` writes `<assemblyList>.query.tsv`, whose first column is the
-assembly accession of every genome from which benchmark reads should be
-simulated (filter by `Category` for a specific test). `<assemblyList>.database`
-lists the accessions that instead go into the classifier database.
-
-[MGSIM](https://github.com/nick-youngblut/MGSIM) turns a genome table into
-simulated Illumina / PacBio / Nanopore metagenomes (its read simulators — ART,
-SimLord, NanoSim-H — model platform-specific sequencing error). A pinned
-[fork](https://github.com/jaebeom-kim/MGSIM) is bundled as the
-`third_party/MGSIM` submodule; install it into a conda env named `mgsim` with:
-
-```sh
-scripts/install-mgsim.sh          # inits the submodule + builds the 'mgsim' conda env
+scripts/install-mgsim.sh    # inits the submodule and builds the 'mgsim' conda env
 conda activate mgsim
 ```
 
-The script uses `mamba` when available (falling back to `conda`) and pip-installs
-MGSIM from the submodule. If you cloned without `--recurse-submodules`, it runs
-`git submodule update --init` for you. To do it by hand:
+### Prepare the MGSIM genome table
+`benchtools_to_mgsim.py` converts a query table into an MGSIM genome table, using each assembly accession as the `Taxon` label and resolving it to a FASTA under `<genome dir>`.
+
+- `<query.tsv>` — the query table from `split` or `sample-queries`.
+- `<genome dir>` — directory of genome FASTA files.
 
 ```sh
-git submodule update --init third_party/MGSIM
-mamba env create -n mgsim -f third_party/MGSIM/environment.yml
-conda activate mgsim && pip install ./third_party/MGSIM
+scripts/benchtools_to_mgsim.py <query.tsv> --has-header --genome-dir <genome dir> -o <genome table>
 ```
 
-`scripts/benchtools_to_mgsim.py` bridges a benchtools accession list into the
-tab-separated genome table MGSIM expects. It uses the **assembly accession as the
-`Taxon` label**, so every simulated read traces straight back to its source
-assembly for grading against an accession→taxid answer sheet (`benchtools grade`).
+### Simulate communities and reads
+```sh
+# Abundance profiles (writes out/comm_abund.txt)
+MGSIM communities --n-comm <N> <genome table> out/comm
 
-MGSIM uses two table flavours, and the bridge produces whichever you need:
-
-- **`Taxon` + `Fasta`** (for `MGSIM communities` / `MGSIM reads`). Point the
-  bridge at the genome FASTAs you already have — usually the same files used to
-  build the classifier database — and it resolves each accession to a file:
-
-  ```sh
-  scripts/benchtools_to_mgsim.py \
-      assemblies.list.query.tsv --has-header \
-      --genome-dir /data/gtdb/genomes \
-      -o mgsim.genomes.tsv
-
-  MGSIM communities --n-comm 2 mgsim.genomes.tsv out/comm
-  MGSIM reads mgsim.genomes.tsv --sr-seq-depth 1e6 out/comm_abund.txt out/reads/
-  ```
-
-  (The bridge reads column 0 by default; `--has-header` skips the manifest's
-  header row. To simulate only one test, filter first, e.g.
-  `awk -F'\t' '$2=="familyExclusion"{print $1}' assemblies.list.query.tsv`.)
-
-- **`Taxon` + `Accession`** (for `MGSIM genome_download`, which fetches the
-  FASTAs itself). Omit `--genome-dir`:
-
-  ```sh
-  scripts/benchtools_to_mgsim.py assemblies.list.query.tsv --has-header \
-      -o mgsim.taxon_accession.tsv
-  MGSIM genome_download -d genomes/ mgsim.taxon_accession.tsv > mgsim.genomes.tsv
-  ```
-
-  Note: benchtools emit *assembly* accessions (`GCF_`/`GCA_`) while MGSIM's
-  `genome_download` expects *nucleotide* accessions (`NC_`/`NZ_`). If you already
-  have the assembly FASTAs, prefer the `--genome-dir` path above.
-
-Run `scripts/benchtools_to_mgsim.py --help` for all options (`--fasta-map`,
-`--fasta-suffix`, `--column`, `--has-header`, `--allow-missing`, `--no-dedup`).
-
-## Relationship to Metabuli
-
-The taxonomy engine (`NcbiTaxonomy`, `TaxonomyWrapper`) and the tool
-sources are ported from Metabuli. Everything the tools needed from the mmseqs2
-framework has been replaced by small self-contained shims under `src/compat/`:
-
-- **CLI** — Metabuli's `LocalParameters` / mmseqs `Parameters` / `Command`
-  framework is replaced by a lightweight `Parameters` struct and hand-rolled
-  argument parser (`src/Parameters.*`, `src/main.cpp`).
-- **Utilities** — `Util::split`, `FileUtil::fileExists`, `MathUtil::flog2/ipow`,
-  `Debug`/`EXIT`, and `SORT_SERIAL` are reimplemented in `src/compat/`.
-- Unused dependencies (`IndexCreator`, `KSeqWrapper`, `DBReader`, …) were dropped.
-
-The tools produce output byte-identical to the corresponding Metabuli expert
-commands (`grade`, and `maketestsets` + `makeInclusionTestQueries` combined —
-the latter two are folded into the single `makeBenchmarkSet` command here).
-
-## Layout
-
+# Reads (uses the genome table + the abundance table)
+MGSIM reads <genome table> --sr-seq-depth <depth> out/comm_abund.txt out/illumina/   # Illumina
+MGSIM reads <genome table> --pb-seq-depth <depth> out/comm_abund.txt out/pacbio/     # PacBio
+MGSIM reads <genome table> --np-seq-depth <depth> out/comm_abund.txt out/nanopore/   # Nanopore
 ```
-src/
-  main.cpp            CLI dispatcher
-  Parameters.{h,cpp}  lightweight options + argument parser
-  Assembly.h          the Assembly struct (from Metabuli's common.h)
-  compat/             minimal drop-in replacements for mmseqs headers
-  taxonomy/           NcbiTaxonomy + TaxonomyWrapper (ported)
-  tools/              grade, makeBenchmarkSet, sampleQueries
-scripts/
-  benchtools_to_mgsim.py   accession list -> MGSIM genome table
-  install-mgsim.sh         build the bundled MGSIM into a conda env
-third_party/
-  MGSIM/              pinned MGSIM fork (git submodule) for read simulation
-```
+
+## Grade classification and profiling results
+
+_Coming soon._
