@@ -6,7 +6,7 @@
 
 // Tool entry points (defined in src/tools/*.cpp).
 int grade(const Parameters &par);
-int makeBenchmarkSet(const Parameters &par);
+int split(const Parameters &par);
 int sampleQueries(const Parameters &par);
 
 namespace {
@@ -37,27 +37,26 @@ const std::vector<Tool> TOOLS = {
      "    --threads INT         number of OpenMP threads (default: 1)",
      grade},
 
-    {"makeBenchmarkSet", 2,
-     "makeBenchmarkSet <assemblyList> <taxonomyDir> [options]\n"
+    {"split", 4,
+     "split <assemblyList> <taxonomyDir> <acc2taxid> <outputPrefix> [options]\n"
      "    Build exclusion + inclusion benchmark sets from an assembly list.\n"
      "    Emits the family/genus/species/subspecies exclusion sets, the database\n"
-     "    assembly list, and the subspecies/species inclusion query sets (gtdb).\n"
+     "    assembly list, and the species/subspecies inclusion query pairs.\n"
      "    <assemblyList>        file listing one assembly accession per line\n"
      "    <taxonomyDir>         directory with names.dmp, nodes.dmp, merged.dmp\n"
+     "    <acc2taxid>           assembly accession -> taxid mapping file\n"
+     "    <outputPrefix>        output file prefix\n"
      "  Options:\n"
-     "    --test-type STR       gtdb | virus (default: gtdb)\n"
      "    --seed INT            random seed (default: 0)\n"
-     "    --acc2taxid FILE      accession->taxid mapping file (required for --test-type virus)\n"
-     "    --prefix STR          output file prefix (default: <assemblyList>)\n"
      "    --skip-validation     skip the exclusion/inclusion validation checks\n"
-     "  Outputs: <prefix>.database, <prefix>.query.tsv, <prefix>.summary",
-     makeBenchmarkSet},
+     "  Outputs: <outputPrefix>.database, <outputPrefix>.query.tsv, <outputPrefix>.summary",
+     split},
 
     {"sample-queries", 2,
      "sample-queries <queryTsv> <outPrefix> [options]\n"
      "    Sample a diversity-maximizing subset of query genomes from a\n"
-     "    makeBenchmarkSet .query.tsv manifest (round-robin over SubjectTaxID).\n"
-     "    <queryTsv>            the .query.tsv manifest from makeBenchmarkSet\n"
+     "    split .query.tsv manifest (round-robin over SubjectTaxID).\n"
+     "    <queryTsv>            the .query.tsv manifest from split\n"
      "    <outPrefix>           output prefix (required)\n"
      "  Options:\n"
      "    --number INT          total sample size across categories (required)\n"

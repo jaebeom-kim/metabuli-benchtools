@@ -25,11 +25,10 @@ struct Parameters {
     int threads = 1;            // --threads
     std::string testType = "gtdb"; // --test-type
 
-    // --- makeBenchmarkSet ---
+    // --- split ---
+    // Positional args: <assemblyList> <taxonomyDir> <acc2taxid> <outputPrefix>
     unsigned int randomSeed = 0;   // --seed
-    std::string assacc2taxid;      // --acc2taxid : accession->taxid map (virus mode)
     bool skipValidation = false;   // --skip-validation : skip exclusion/inclusion checks
-    std::string outputPrefix;      // --prefix : output file prefix (default: <assemblyList>)
 
     // --- sample-queries ---
     int sampleNumber = 0;          // --number : total sample size across categories

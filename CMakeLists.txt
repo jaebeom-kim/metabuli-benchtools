@@ -18,7 +18,7 @@ add_executable(benchtools
     src/taxonomy/NcbiTaxonomy.cpp
     src/taxonomy/TaxonomyWrapper.cpp
     src/tools/grade.cpp
-    src/tools/makeBenchmarkSet.cpp
+    src/tools/split.cpp
     src/tools/sampleQueries.cpp
 )
 

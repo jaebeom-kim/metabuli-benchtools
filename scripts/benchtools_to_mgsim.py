@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Bridge benchtools assembly lists into an MGSIM genome table.
 
-`makeBenchmarkSet` and `makeInclusionQuerySet` emit plain lists of assembly
-accessions (one per line), e.g. the `.databaseAssembly`, `.totalExcludedAssembly`,
-`.subspeciesInclusionAssemblies`, and `.speciesInclusionAssemblies` files. MGSIM
-(https://github.com/nick-youngblut/MGSIM) simulates metagenomic samples from a
-tab-separated genome table.
+`split` (and its `sample-queries` subset) emit a `.query.tsv` manifest whose
+first column is an assembly accession, plus a `.database` list (one accession per
+line). MGSIM (https://github.com/nick-youngblut/MGSIM) simulates metagenomic
+samples from a tab-separated genome table.
 
 This script turns one or more accession lists into that table. MGSIM uses two
 table flavours:

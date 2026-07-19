@@ -56,8 +56,6 @@ bool parseArguments(Parameters &par, int argc, const char **argv, int start, std
         else if (name == "--threads") { if (!nextValue(value)) return false; par.threads = std::atoi(value.c_str()); }
         else if (name == "--test-type") { if (!nextValue(value)) return false; par.testType = value; }
         else if (name == "--seed") { if (!nextValue(value)) return false; par.randomSeed = (unsigned int) std::strtoul(value.c_str(), nullptr, 10); }
-        else if (name == "--acc2taxid") { if (!nextValue(value)) return false; par.assacc2taxid = value; }
-        else if (name == "--prefix") { if (!nextValue(value)) return false; par.outputPrefix = value; }
         else if (name == "--number") { if (!nextValue(value)) return false; par.sampleNumber = std::atoi(value.c_str()); }
         else if (name == "--ratio") { if (!nextValue(value)) return false; par.sampleRatio = value; }
         else { err = "Unknown option: " + name; return false; }

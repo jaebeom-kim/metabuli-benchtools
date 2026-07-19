@@ -1,9 +1,9 @@
 // sample-queries: draw a diversity-maximizing subset of query genomes from the
-// <assemblyList>.query.tsv manifest produced by makeBenchmarkSet.
+// <assemblyList>.query.tsv manifest produced by split.
 //
 // --number sets the total sample size and --ratio (6 comma-separated weights, in
 // the order familyExcl,genusExcl,speciesExcl,subspeciesExcl,speciesIncl,
-// subspeciesIncl) splits it across categories. Because makeBenchmarkSet excludes
+// subspeciesIncl) splits it across categories. Because split excludes
 // exactly one taxon per parent, every SubjectTaxID group in a category sits under
 // a distinct parent, so "maximize diversity across taxa" reduces to round-robin
 // over SubjectTaxID groups: we take one genome from each group before taking a
