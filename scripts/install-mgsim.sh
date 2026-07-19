@@ -38,18 +38,22 @@ if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
     export CONDA_SUBDIR=osx-64
 fi
 
-# 3. Create (or update) the conda environment from the pinned environment.yml.
-#    We add 'nodefaults' to the channel list so conda never consults Anaconda's
-#    default channel (repo.anaconda.com/pkgs/main), which is gated behind a
-#    Terms-of-Service prompt. Everything MGSIM needs is on conda-forge/bioconda.
+# 3. Create (or update) the conda environment from the pinned environment.yml,
+#    patched two ways:
+#    - add 'nodefaults' to the channels so conda never consults Anaconda's default
+#      channel (repo.anaconda.com/pkgs/main), which is gated behind a
+#      Terms-of-Service prompt (everything MGSIM needs is on conda-forge/bioconda);
+#    - add 'pip' to the dependencies, since the upstream environment.yml omits it
+#      and we need it to install MGSIM itself into the env.
 env_yml="$(mktemp -t mgsim-env.XXXXXX)"
 trap 'rm -f "$env_yml"' EXIT
-if grep -qE '^[[:space:]]*-[[:space:]]*nodefaults[[:space:]]*$' "$mgsim_dir/environment.yml"; then
-    cp "$mgsim_dir/environment.yml" "$env_yml"
-else
-    awk '1; /^channels:/ && !d {print "  - nodefaults"; d=1}' \
-        "$mgsim_dir/environment.yml" > "$env_yml"
-fi
+have_nd=0; grep -qE '^[[:space:]]*-[[:space:]]*nodefaults[[:space:]]*$' "$mgsim_dir/environment.yml" && have_nd=1
+have_pip=0; grep -qE '^[[:space:]]*-[[:space:]]*pip( |=|>|<|$)' "$mgsim_dir/environment.yml" && have_pip=1
+awk -v nd="$have_nd" -v pip="$have_pip" '
+    { print }
+    /^channels:/     && !cd && nd  == 0 { print "  - nodefaults"; cd = 1 }
+    /^dependencies:/ && !dd && pip == 0 { print "  - pip";        dd = 1 }
+' "$mgsim_dir/environment.yml" > "$env_yml"
 
 if conda env list | awk '{print $1}' | grep -qx "$env_name"; then
     echo "==> Updating existing conda env '$env_name' ..."
@@ -64,9 +68,10 @@ if [ -n "${CONDA_SUBDIR:-}" ]; then
     conda run -n "$env_name" conda config --env --set subdir "$CONDA_SUBDIR" || true
 fi
 
-# 4. Install MGSIM itself into that env.
+# 4. Install MGSIM itself into that env (python -m pip so it works even if the
+#    'pip' launcher isn't on the env's PATH).
 echo "==> Installing MGSIM into '$env_name' ..."
-conda run -n "$env_name" pip install "$mgsim_dir"
+conda run -n "$env_name" python -m pip install "$mgsim_dir"
 
 echo
 echo "Done. Activate the environment and check MGSIM with:"
