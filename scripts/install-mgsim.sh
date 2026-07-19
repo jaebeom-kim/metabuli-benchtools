@@ -28,12 +28,24 @@ elif ! command -v conda >/dev/null 2>&1; then
 fi
 
 # 3. Create (or update) the conda environment from the pinned environment.yml.
+#    We add 'nodefaults' to the channel list so conda never consults Anaconda's
+#    default channel (repo.anaconda.com/pkgs/main), which is gated behind a
+#    Terms-of-Service prompt. Everything MGSIM needs is on conda-forge/bioconda.
+env_yml="$(mktemp -t mgsim-env.XXXXXX)"
+trap 'rm -f "$env_yml"' EXIT
+if grep -qE '^[[:space:]]*-[[:space:]]*nodefaults[[:space:]]*$' "$mgsim_dir/environment.yml"; then
+    cp "$mgsim_dir/environment.yml" "$env_yml"
+else
+    awk '1; /^channels:/ && !d {print "  - nodefaults"; d=1}' \
+        "$mgsim_dir/environment.yml" > "$env_yml"
+fi
+
 if conda env list | awk '{print $1}' | grep -qx "$env_name"; then
     echo "==> Updating existing conda env '$env_name' ..."
-    "$solver" env update -n "$env_name" -f "$mgsim_dir/environment.yml"
+    "$solver" env update -n "$env_name" -f "$env_yml"
 else
     echo "==> Creating conda env '$env_name' ..."
-    "$solver" env create -n "$env_name" -f "$mgsim_dir/environment.yml"
+    "$solver" env create -n "$env_name" -f "$env_yml"
 fi
 
 # 4. Install MGSIM itself into that env.
