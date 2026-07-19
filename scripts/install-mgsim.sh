@@ -27,6 +27,17 @@ elif ! command -v conda >/dev/null 2>&1; then
     exit 1
 fi
 
+# 2b. On Apple Silicon, MGSIM's pinned bioconda tools (art, simlord, nanosim-h,
+#     pyfastx, fqtools) have no osx-arm64 build, so install the osx-64 builds and
+#     run them under Rosetta 2. CONDA_SUBDIR drives the solve to osx-64.
+if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+    echo "==> Apple Silicon detected: installing osx-64 builds (run under Rosetta 2)."
+    if ! /usr/bin/pgrep -q oahd 2>/dev/null; then
+        echo "    note: Rosetta 2 may be required. Install with: softwareupdate --install-rosetta --agree-to-license" >&2
+    fi
+    export CONDA_SUBDIR=osx-64
+fi
+
 # 3. Create (or update) the conda environment from the pinned environment.yml.
 #    We add 'nodefaults' to the channel list so conda never consults Anaconda's
 #    default channel (repo.anaconda.com/pkgs/main), which is gated behind a
@@ -46,6 +57,11 @@ if conda env list | awk '{print $1}' | grep -qx "$env_name"; then
 else
     echo "==> Creating conda env '$env_name' ..."
     "$solver" env create -n "$env_name" -f "$env_yml"
+fi
+
+# Pin the env to the same subdir so later `conda install`s into it stay consistent.
+if [ -n "${CONDA_SUBDIR:-}" ]; then
+    conda run -n "$env_name" conda config --env --set subdir "$CONDA_SUBDIR" || true
 fi
 
 # 4. Install MGSIM itself into that env.
