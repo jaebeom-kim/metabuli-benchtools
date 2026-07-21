@@ -17,8 +17,8 @@ Because the benchtools emit *assembly* accessions (GCF_/GCA_) while MGSIM's
 `genome_download` expects *nucleotide* accessions (NC_/NZ_), the recommended path
 is to point this script at the genome FASTAs you already have (the same files you
 build the classifier database from) with --genome-dir or --fasta-map. It then
-resolves each accession to its FASTA and writes a `Taxon` + `Accession` + `Fasta`
-table that `communities`/`reads` can consume directly.
+resolves each accession to its FASTA and writes a `Taxon` + `Fasta` table that
+`communities`/`reads` can consume directly.
 
 The `Taxon` label is the assembly accession itself, so every simulated read
 traces straight back to its source assembly for grading against an
@@ -221,10 +221,13 @@ def main(argv=None):
     out = sys.stdout if args.output == "-" else open(args.output, "w")
     try:
         if want_fasta:
-            out.write("Taxon\tAccession\tFasta\n")
+            # communities/reads only need Taxon + Fasta (Taxon already is the
+            # accession, so a separate Accession column would be redundant).
+            out.write("Taxon\tFasta\n")
             for acc, fasta in rows:
-                out.write(f"{acc}\t{acc}\t{fasta or ''}\n")
+                out.write(f"{acc}\t{fasta or ''}\n")
         else:
+            # genome_download needs the Accession column to fetch the FASTAs.
             out.write("Taxon\tAccession\n")
             for acc, _ in rows:
                 out.write(f"{acc}\t{acc}\n")
