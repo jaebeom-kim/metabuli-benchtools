@@ -20,18 +20,35 @@ using namespace std;
 struct GradeResult{
     unordered_map<string, CountAtRank> countsAtRanks;
     string path;
-    // --score-summary: accumulated read score of TP / FP taxa per rank
-    // (sum and sum-of-squares for mean and sample SD).
-    unordered_map<string, double> tpScoreSum, fpScoreSum;
-    unordered_map<string, double> tpScoreSumSq, fpScoreSumSq;
-    unordered_map<string, long> tpScoreN, fpScoreN;
+    // --score-summary: per rank, per classified taxon at that rank (the taxon a
+    // read was assigned to), the read-score sum and count, split by TP / FP.
+    // Keyed rank -> taxon -> value.
+    unordered_map<string, unordered_map<TaxID, double>> tpTaxonScoreSum, fpTaxonScoreSum;
+    unordered_map<string, unordered_map<TaxID, long>>   tpTaxonScoreN,   fpTaxonScoreN;
 };
 
-// Sample standard deviation from running sum / sum-of-squares / count.
-static double stddev(double sum, double sumSq, long n) {
-    if (n < 2) return 0.0;
-    double var = (sumSq - sum * sum / (double) n) / (double) (n - 1);
-    return var > 0.0 ? std::sqrt(var) : 0.0;
+// Two-level score summary: average the score within each taxon, then take the
+// mean and sample SD ACROSS those per-taxon averages (each taxon weighted
+// equally). `sum`/`cnt` map taxon -> score sum / read count for one rank.
+static void macroScore(const unordered_map<TaxID, double> & sum,
+                       const unordered_map<TaxID, long> & cnt,
+                       double & mean, double & sd, long & nTaxa) {
+    vector<double> avgs;
+    avgs.reserve(sum.size());
+    for (const auto & kv : sum) {
+        auto it = cnt.find(kv.first);
+        long c = (it == cnt.end()) ? 0 : it->second;
+        if (c > 0) avgs.push_back(kv.second / (double) c);
+    }
+    nTaxa = (long) avgs.size();
+    mean = 0.0; sd = 0.0;
+    if (avgs.empty()) return;
+    for (double a : avgs) mean += a;
+    mean /= (double) avgs.size();
+    if (avgs.size() < 2) return;
+    double ss = 0.0;
+    for (double a : avgs) ss += (a - mean) * (a - mean);
+    sd = std::sqrt(ss / (double) (avgs.size() - 1));
 }
 
 struct Score2{
@@ -325,15 +342,17 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
                         else if (p == 'X') rank2FpIdx[rank].push_back(j);
                         else if (p == 'N') rank2FnIdx[rank].push_back(j);
                     }
-                    if (par.scoreSummary) {
-                        if (p == 'O') {
-                            results[i].tpScoreSum[rank] += scores[j];
-                            results[i].tpScoreSumSq[rank] += (double) scores[j] * scores[j];
-                            results[i].tpScoreN[rank]++;
-                        } else if (p == 'X') {
-                            results[i].fpScoreSum[rank] += scores[j];
-                            results[i].fpScoreSumSq[rank] += (double) scores[j] * scores[j];
-                            results[i].fpScoreN[rank]++;
+                    if (par.scoreSummary && (p == 'O' || p == 'X')) {
+                        // Group by the taxon the read was classified to at this rank.
+                        TaxID predAtRank = ncbiTaxonomy.getTaxIdAtRank(classList[j], rank);
+                        if (predAtRank != 0) {
+                            if (p == 'O') {
+                                results[i].tpTaxonScoreSum[rank][predAtRank] += scores[j];
+                                results[i].tpTaxonScoreN[rank][predAtRank]++;
+                            } else { // 'X'
+                                results[i].fpTaxonScoreSum[rank][predAtRank] += scores[j];
+                                results[i].fpTaxonScoreN[rank][predAtRank]++;
+                            }
                         }
                     }
                     if (par.verbosity == 3) cout << " " << p;
@@ -400,13 +419,11 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
                 }
                 if (par.scoreSummary) {
                     for (const string &rank: ranks_local) {
-                        long tn = results[i].tpScoreN[rank], fn2 = results[i].fpScoreN[rank];
-                        double tpAvg = tn ? results[i].tpScoreSum[rank] / tn : 0.0;
-                        double fpAvg = fn2 ? results[i].fpScoreSum[rank] / fn2 : 0.0;
-                        double tpSd = stddev(results[i].tpScoreSum[rank], results[i].tpScoreSumSq[rank], tn);
-                        double fpSd = stddev(results[i].fpScoreSum[rank], results[i].fpScoreSumSq[rank], fn2);
-                        cout << rank << " avgTPscore " << tpAvg << " sd " << tpSd << " (n=" << tn << ")"
-                             << " avgFPscore " << fpAvg << " sd " << fpSd << " (n=" << fn2 << ")" << endl;
+                        double tpMean, tpSd, fpMean, fpSd; long tpG, fpG;
+                        macroScore(results[i].tpTaxonScoreSum[rank], results[i].tpTaxonScoreN[rank], tpMean, tpSd, tpG);
+                        macroScore(results[i].fpTaxonScoreSum[rank], results[i].fpTaxonScoreN[rank], fpMean, fpSd, fpG);
+                        cout << rank << " TPscore " << tpMean << " sd " << tpSd << " (" << tpG << " taxa)"
+                             << " FPscore " << fpMean << " sd " << fpSd << " (" << fpG << " taxa)" << endl;
                     }
                 }
                 cout << endl;
@@ -430,16 +447,15 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
 
     if (par.scoreSummary) {
         cout << "\nRank\t";
-        for (size_t i = 0; i < results.size(); i++) cout << "avgTPscore\tsdTPscore\tavgFPscore\tsdFPscore\t";
+        for (size_t i = 0; i < results.size(); i++) cout << "TPscore_mean\tTPscore_sd\tFPscore_mean\tFPscore_sd\t";
         cout << endl;
         for (const string &rank: ranks) {
             cout << rank << "\t";
             for (auto & result : results) {
-                long tn = result.tpScoreN[rank], fn2 = result.fpScoreN[rank];
-                cout << (tn ? result.tpScoreSum[rank] / tn : 0.0) << "\t"
-                     << stddev(result.tpScoreSum[rank], result.tpScoreSumSq[rank], tn) << "\t"
-                     << (fn2 ? result.fpScoreSum[rank] / fn2 : 0.0) << "\t"
-                     << stddev(result.fpScoreSum[rank], result.fpScoreSumSq[rank], fn2) << "\t";
+                double tpMean, tpSd, fpMean, fpSd; long tpG, fpG;
+                macroScore(result.tpTaxonScoreSum[rank], result.tpTaxonScoreN[rank], tpMean, tpSd, tpG);
+                macroScore(result.fpTaxonScoreSum[rank], result.fpTaxonScoreN[rank], fpMean, fpSd, fpG);
+                cout << tpMean << "\t" << tpSd << "\t" << fpMean << "\t" << fpSd << "\t";
             }
             cout << endl;
         }
