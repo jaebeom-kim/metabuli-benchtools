@@ -143,9 +143,12 @@ MGSIM reads <genome table> --np-seq-depth <depth> out/comm_abund.txt out/nanopor
 
 ## Grade classification and profiling results
 
-Two graders, both scoring per rank against the ground truth: `grade` evaluates
-**per-read classification**, and `grade-composition` evaluates **abundance
-(profiling)** estimates.
+Three graders, all scoring per rank against the ground truth. `grade` evaluates
+**per-read classification** for a single result; `grade-classification` is its
+grouped, multi-tool form; and `grade-composition` evaluates **abundance
+(profiling)** estimates. The two grouped graders take a 3-column list
+(`group` · `community` · file) and report each tool's mean ± standard deviation
+across communities.
 
 ### grade — per-read classification
 
@@ -164,6 +167,25 @@ Key options: `--test-type` (`gtdb` [default], `cami`, `cami-long`, `cami-euk`,
 `hiv`, …), `--rank`, `--read-id-col`, `--tax-id-col`, `--score-col`,
 `--skip-secondary`, `--threads`.
 
+### grade-classification — grouped per-read classification
+
+The multi-tool version of `grade`: grades many tools × communities in one run and
+reports each tool's mean ± standard deviation across communities.
+
+- `<classificationList>` — 3-column TSV: `group` (tool) · `community` · classification-result path.
+- `<mapping>` — one shared answer sheet (`accession<TAB>taxid`), used for every file.
+- `<taxonomy dir>` — `names.dmp`, `nodes.dmp`, `merged.dmp`.
+
+```sh
+benchtools grade-classification <classificationList> <mapping> <taxonomy dir> [--test-type gtdb] [--rank ...] [--read-id-col N] [--tax-id-col N] [--skip-secondary]
+```
+
+Output — one row per `(group, rank)`:
+
+```
+Group  Rank  N  Precision_mean Precision_sd  Sensitivity_mean Sensitivity_sd  F1_mean F1_sd
+```
+
 ### grade-composition — abundance / profiling
 
 Compares each tool's estimated profile to the MGSIM ground-truth abundance, then
@@ -176,13 +198,15 @@ Scoring is *ExpectedRank-aware*: from each query genome's `ExpectedRank` in
 reportable — credited at the genus/family/… where a perfect classifier places its
 reads, never penalized for an unreachable species.
 
-- `<profileList>` — 3-column TSV: `group` (tool) · `community` · report path. The `community` keys into the truth's `Community` column, so one run covers many tools × communities.
+- `<profileList>` — 5-column TSV: `group` (tool) · `community` · report path · `taxidCol` · `countCol`. `taxidCol`/`countCol` are **1-based** column indices into that report, so each tool can use its own layout. The `community` keys into the truth's `Community` column, so one run covers many tools × communities.
 - `<truthAbundance>` — MGSIM `communities` output: `*_abund.txt` (cell fraction) or `*_wAbund.txt` (sequence fraction); use the one matching what the profiler reports.
 - `<queryTsv>` — the `split` / `sample-queries` `.query.tsv` (supplies each genome's taxid and `ExpectedRank`).
 - `<taxonomy dir>` — `names.dmp`, `nodes.dmp`, `merged.dmp`.
 
-Each report is a Metabuli / Kraken-style table (`percentage, cladeReads,
-taxonReads, rank, taxID, name`).
+`countCol` must be the **per-taxon** read count (rolled up the tree here), not a
+cumulative clade count. For a Metabuli report
+(`#clade_proportion  clade_count  taxon_count  avg_score  rank  taxID  name`) use
+`taxidCol = 6` and `countCol = 3` (`taxon_count`).
 
 ```sh
 benchtools grade-composition <profileList> <truthAbundance> <queryTsv> <taxonomy dir> [--rank species,genus] [--min-abundance F]
