@@ -1,19 +1,22 @@
 // grade-composition: evaluate abundance / profiling estimates against MGSIM
 // ground-truth abundances, for multiple tools over multiple communities.
 //
-// <profileList> is a 3-column TSV: group (tool name), community, profile path.
-// The `community` keys into the MGSIM truth's `Community` column. Each profile is
-// graded against its community, per rank; results are then grouped by `group` and
-// aggregated across that group's communities into a mean and standard deviation.
+// <profileList> is a 5-column TSV: group (tool name), community, profile path,
+// taxid column, read-count column. The last two are 1-based column indices into
+// that report (so different tools can use different layouts). The `community`
+// keys into the MGSIM truth's `Community` column. Each profile is graded against
+// its community, per rank; results are then grouped by `group` and aggregated
+// across that group's communities into a mean and standard deviation.
 //
 // MGSIM `communities` writes the truth (columns: Community, Taxon, Perc_rel_abund,
 // Rank); Taxon is the assembly accession (benchtools_to_mgsim.py labels genomes by
 // accession). Two flavours exist: *_abund.txt (cell / genome-copy fraction) and
 // *_wAbund.txt (DNA-pool fraction) -- pass whichever matches the profiler.
 //
-// The estimate is a Metabuli / Kraken-style report (columns: percentage,
-// cladeReads, taxonReads, rank, taxID, name); each taxon's directly-assigned reads
-// (taxonReads) are rolled up to the target rank. The truth is compared against the
+// The estimate is a report with a taxID column and a *per-taxon* read-count column
+// (e.g. Metabuli's taxon_count, not the cumulative clade_count). Each taxon's
+// directly-assigned reads are rolled up to the target rank. The truth is compared
+// against the
 // *ideal (best-possible) profile*: <queryTsv> (split/sample-queries .query.tsv)
 // gives each genome its taxid (QueryTaxID) and ExpectedRank -- the deepest rank
 // reportable given the database -- so a held-out (exclusion) genome only counts at
@@ -220,8 +223,10 @@ int gradeComposition(const Parameters &par) {
     }
     if (truthByComm.empty()) { cerr << "Error: no truth rows parsed from " << truthFile << endl; return 1; }
 
-    // Parse the 3-column profile list: group, community, profile path.
-    struct Job { string group, community, path; };
+    // Parse the 5-column profile list: group, community, profile path,
+    // taxid column, read-count column (the last two are 1-based indices into the
+    // report, so different tools can use different report layouts).
+    struct Job { string group, community, path; int taxidCol, countCol; };
     vector<Job> jobs;
     vector<string> groupOrder;
     set<string> groupSeen;
@@ -233,11 +238,16 @@ int gradeComposition(const Parameters &par) {
         while (getline(in, line)) {
             if (line.empty()) continue;
             vector<string> f = splitTab(line);
-            if (f.size() < 3) continue;
+            if (f.size() < 5) continue;
             if (first) { first = false; if (f[0] == "group" || f[0] == "Group") continue; } // optional header
-            Job j{f[0], f[1], f[2]};
-            jobs.push_back(j);
-            if (!groupSeen.count(j.group)) { groupSeen.insert(j.group); groupOrder.push_back(j.group); }
+            int taxidCol = atoi(f[3].c_str()) - 1; // 1-based -> 0-based
+            int countCol = atoi(f[4].c_str()) - 1;
+            if (taxidCol < 0 || countCol < 0) {
+                cerr << "Error: taxid/count columns must be 1-based indices (>= 1): " << line << endl;
+                return 1;
+            }
+            jobs.push_back(Job{f[0], f[1], f[2], taxidCol, countCol});
+            if (!groupSeen.count(f[0])) { groupSeen.insert(f[0]); groupOrder.push_back(f[0]); }
         }
     }
     if (jobs.empty()) { cerr << "Error: no rows in profile list " << profileList << endl; return 1; }
@@ -251,20 +261,22 @@ int gradeComposition(const Parameters &par) {
         auto tc = truthByComm.find(job.community);
         if (tc == truthByComm.end()) { missingComm.insert(job.community); continue; }
 
-        // Parse the report: taxID (col 4) -> directly-assigned reads (col 2).
+        // Parse the report using this row's taxid/count columns; roll per-taxon
+        // (directly-assigned) reads up to the target rank later.
         unordered_map<TaxID, double> taxonReads;
         {
             ifstream in(job.path);
             if (!in.is_open()) { cerr << "Error: cannot open profile " << job.path << endl; return 1; }
+            const int taxidCol = job.taxidCol, countCol = job.countCol;
             string line;
             while (getline(in, line)) {
-                if (line.empty()) continue;
+                if (line.empty() || line[0] == '#') continue; // skip blank / header lines
                 vector<string> f = splitTab(line);
-                if (f.size() < 5) continue;
+                if ((int) f.size() <= max(taxidCol, countCol)) continue;
                 char *end = nullptr;
-                long taxid = strtol(f[4].c_str(), &end, 10);
-                if (end == f[4].c_str()) continue; // header / non-numeric taxID
-                double reads = atof(f[2].c_str());
+                long taxid = strtol(f[taxidCol].c_str(), &end, 10);
+                if (end == f[taxidCol].c_str()) continue; // non-numeric taxID (header)
+                double reads = atof(f[countCol].c_str());
                 if (taxid <= 0 || reads <= 0) continue;
                 taxonReads[(TaxID) taxid] += reads;
             }

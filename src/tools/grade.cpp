@@ -1,6 +1,7 @@
 #include "TaxonomyWrapper.h"
 #include "Parameters.h"
 #include "Util.h"
+#include "gradeCommon.h"
 
 #include <string>
 #include <iostream>
@@ -15,21 +16,6 @@
 
 using namespace std;
 
-struct CountAtRank {
-    int total;
-    int FP;
-    int TP;
-    int FN;
-    float precision;
-    float sensitivity;
-    float f1;
-    void calculate() {
-        precision = (float)TP / (float)(TP + FP);
-        sensitivity = (float)TP / (float)(total);
-        f1 = 2 * precision * sensitivity / (precision + sensitivity);
-    }
-};
-
 struct GradeResult{
     unordered_map<string, CountAtRank> countsAtRanks;
     string path;
@@ -41,19 +27,6 @@ struct Score2{
     std::string rank;
     float score;
 };
-
-
-
-char compareTaxonAtRank_CAMI(TaxID shot, TaxID target, const TaxonomyWrapper & ncbiTaxonomy, CountAtRank & count,
-                             const string & rank);
-
-char compareTaxonAtRank_CAMI_euk(TaxID shot, TaxID target, TaxonomyWrapper & ncbiTaxonomy, CountAtRank & count,
-                                 const string & rank);
-
-char compareTaxon_overclassification(TaxID shot, TaxID target, TaxonomyWrapper & ncbiTaxonomy, CountAtRank & count,
-                                     const string & rank);
-
-char compareTaxon_hivExclusion(TaxID shot, TaxID target, CountAtRank & count);
 
 int grade(const Parameters &par) {
 

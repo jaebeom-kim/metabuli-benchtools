@@ -9,6 +9,7 @@ int grade(const Parameters &par);
 int split(const Parameters &par);
 int sampleQueries(const Parameters &par);
 int gradeComposition(const Parameters &par);
+int gradeClassification(const Parameters &par);
 
 namespace {
 
@@ -74,8 +75,10 @@ const std::vector<Tool> TOOLS = {
      "    scoring each genome only as deep as its ExpectedRank (the ideal profile).\n"
      "    Per (group, rank) reports mean and SD across communities of L1, Bray-Curtis,\n"
      "    Purity, and Completeness.\n"
-     "    <profileList>         3-column TSV: group(tool)  community  Metabuli/Kraken-report\n"
-     "                          (community keys into <truthAbundance>'s Community column)\n"
+     "    <profileList>         5-column TSV: group(tool)  community  report  taxidCol  countCol\n"
+     "                          (taxidCol/countCol are 1-based; countCol is per-taxon reads,\n"
+     "                           e.g. Metabuli taxID=6, taxon_count=3; community keys into\n"
+     "                           <truthAbundance>'s Community column)\n"
      "    <truthAbundance>      MGSIM communities *_abund.txt (cell) or *_wAbund.txt (sequence)\n"
      "    <queryTsv>            split/sample-queries .query.tsv (Accession -> QueryTaxID, ExpectedRank)\n"
      "    <taxonomyDir>         directory with names.dmp, nodes.dmp, merged.dmp\n"
@@ -83,6 +86,22 @@ const std::vector<Tool> TOOLS = {
      "    --rank STR            comma-separated ranks (default: species,genus)\n"
      "    --min-abundance F     detection threshold as a fraction (default: 0)",
      gradeComposition},
+
+    {"grade-classification", 3,
+     "grade-classification <classificationList> <mapping> <taxonomyDir> [options]\n"
+     "    Grouped, multi-tool version of grade: score per-read classifications and\n"
+     "    report per (group, rank) mean and SD across communities of\n"
+     "    precision / sensitivity / F1.\n"
+     "    <classificationList>  3-column TSV: group(tool)  community  classification-result\n"
+     "    <mapping>             shared answer sheet: accession<TAB>taxid\n"
+     "    <taxonomyDir>         directory with names.dmp, nodes.dmp, merged.dmp\n"
+     "  Options:\n"
+     "    --test-type STR       read-id parsing: gtdb [default], gtdb-amgsim, cami, hiv, ...\n"
+     "    --rank STR            comma-separated ranks (default: class,order,family,genus,species)\n"
+     "    --read-id-col INT     0-based read-id column (default: 1)\n"
+     "    --tax-id-col INT      0-based predicted-taxid column (default: 2)\n"
+     "    --skip-secondary      count only the first classification per read (GTDB)",
+     gradeClassification},
 };
 
 void printUsage(const std::string &program) {
