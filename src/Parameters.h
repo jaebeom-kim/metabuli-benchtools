@@ -17,6 +17,7 @@ struct Parameters {
     int scoreCol = 0;           // --score-col   : 0-based column with the score
     int verbosity = 2;          // --verbosity   : 3 prints per-read decisions
     bool skipSecondary = false; // --skip-secondary
+    bool scoreSummary = false;  // --score-summary : also report avg TP/FP score per rank
     bool topHitOnly = false;    // --top-hit-only
     std::string testRank;       // --rank        : comma-separated ranks (default set below)
     std::string printColumns;   // --print-cols  : comma-separated column indices to dump for TP/FP/FN

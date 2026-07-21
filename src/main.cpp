@@ -33,6 +33,7 @@ const std::vector<Tool> TOOLS = {
      "    --read-id-col INT     0-based column holding the read id (default: 1)\n"
      "    --tax-id-col INT      0-based column holding the taxon id (default: 2)\n"
      "    --score-col INT       0-based column holding the score (default: 0)\n"
+     "    --score-summary       also report avg score of TP and FP taxa per rank\n"
      "    --print-cols STR      comma-separated column indices to dump into .tp/.fp/.fn files\n"
      "    --skip-secondary      count only the first classification per read (GTDB only)\n"
      "    --verbosity INT       3 prints per-read decisions (default: 2)\n"

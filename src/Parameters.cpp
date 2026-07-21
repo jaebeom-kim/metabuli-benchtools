@@ -37,6 +37,7 @@ bool parseArguments(Parameters &par, int argc, const char **argv, int start, std
         if (name == "--skip-secondary") { par.skipSecondary = true; continue; }
         if (name == "--top-hit-only")   { par.topHitOnly = true; continue; }
         if (name == "--skip-validation") { par.skipValidation = true; continue; }
+        if (name == "--score-summary")  { par.scoreSummary = true; continue; }
 
         // Value flags: fetch the value from inline (--flag=value) or the next token.
         auto nextValue = [&](std::string &out) -> bool {

@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
+#include <cmath>
 
 #ifdef OPENMP
 #include <omp.h>
@@ -19,7 +20,19 @@ using namespace std;
 struct GradeResult{
     unordered_map<string, CountAtRank> countsAtRanks;
     string path;
+    // --score-summary: accumulated read score of TP / FP taxa per rank
+    // (sum and sum-of-squares for mean and sample SD).
+    unordered_map<string, double> tpScoreSum, fpScoreSum;
+    unordered_map<string, double> tpScoreSumSq, fpScoreSumSq;
+    unordered_map<string, long> tpScoreN, fpScoreN;
 };
+
+// Sample standard deviation from running sum / sum-of-squares / count.
+static double stddev(double sum, double sumSq, long n) {
+    if (n < 2) return 0.0;
+    double var = (sumSq - sum * sum / (double) n) / (double) (n - 1);
+    return var > 0.0 ? std::sqrt(var) : 0.0;
+}
 
 struct Score2{
     Score2(int tf, std::string rank, float score) : tf(tf), rank(rank), score(score) { }
@@ -270,6 +283,15 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
                     numberOfClassifications++;
                 }
 
+                // Read score (kept in lockstep with classList) for --score-summary
+                if (par.scoreSummary) {
+                    float sc = 0.0f;
+                    if ((size_t) par.scoreCol < fields.size()) {
+                        try { sc = stof(fields[par.scoreCol]); } catch (...) { sc = 0.0f; }
+                    }
+                    scores.push_back(sc);
+                }
+
                 // Read column for printing
                 if (!printColumnsIdx.empty()) {
                     vector<string> values;
@@ -302,6 +324,17 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
                         if (p == 'O') rank2TpIdx[rank].push_back(j);
                         else if (p == 'X') rank2FpIdx[rank].push_back(j);
                         else if (p == 'N') rank2FnIdx[rank].push_back(j);
+                    }
+                    if (par.scoreSummary) {
+                        if (p == 'O') {
+                            results[i].tpScoreSum[rank] += scores[j];
+                            results[i].tpScoreSumSq[rank] += (double) scores[j] * scores[j];
+                            results[i].tpScoreN[rank]++;
+                        } else if (p == 'X') {
+                            results[i].fpScoreSum[rank] += scores[j];
+                            results[i].fpScoreSumSq[rank] += (double) scores[j] * scores[j];
+                            results[i].fpScoreN[rank]++;
+                        }
                     }
                     if (par.verbosity == 3) cout << " " << p;
                 }
@@ -365,6 +398,17 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
                          << results[i].countsAtRanks[rank].precision << " "
                          << results[i].countsAtRanks[rank].sensitivity << " " << results[i].countsAtRanks[rank].f1 << endl;
                 }
+                if (par.scoreSummary) {
+                    for (const string &rank: ranks_local) {
+                        long tn = results[i].tpScoreN[rank], fn2 = results[i].fpScoreN[rank];
+                        double tpAvg = tn ? results[i].tpScoreSum[rank] / tn : 0.0;
+                        double fpAvg = fn2 ? results[i].fpScoreSum[rank] / fn2 : 0.0;
+                        double tpSd = stddev(results[i].tpScoreSum[rank], results[i].tpScoreSumSq[rank], tn);
+                        double fpSd = stddev(results[i].fpScoreSum[rank], results[i].fpScoreSumSq[rank], fn2);
+                        cout << rank << " avgTPscore " << tpAvg << " sd " << tpSd << " (n=" << tn << ")"
+                             << " avgFPscore " << fpAvg << " sd " << fpSd << " (n=" << fn2 << ")" << endl;
+                    }
+                }
                 cout << endl;
             }
         }
@@ -382,6 +426,23 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
                  << "\t" << result.countsAtRanks[rank].f1 << "\t";
         }
         cout << endl;
+    }
+
+    if (par.scoreSummary) {
+        cout << "\nRank\t";
+        for (size_t i = 0; i < results.size(); i++) cout << "avgTPscore\tsdTPscore\tavgFPscore\tsdFPscore\t";
+        cout << endl;
+        for (const string &rank: ranks) {
+            cout << rank << "\t";
+            for (auto & result : results) {
+                long tn = result.tpScoreN[rank], fn2 = result.fpScoreN[rank];
+                cout << (tn ? result.tpScoreSum[rank] / tn : 0.0) << "\t"
+                     << stddev(result.tpScoreSum[rank], result.tpScoreSumSq[rank], tn) << "\t"
+                     << (fn2 ? result.fpScoreSum[rank] / fn2 : 0.0) << "\t"
+                     << stddev(result.fpScoreSum[rank], result.fpScoreSumSq[rank], fn2) << "\t";
+            }
+            cout << endl;
+        }
     }
     return 0;
 }
