@@ -85,7 +85,8 @@ const std::vector<Tool> TOOLS = {
      "    <taxonomyDir>         directory with names.dmp, nodes.dmp, merged.dmp\n"
      "  Options:\n"
      "    --rank STR            comma-separated ranks (default: species,genus)\n"
-     "    --min-abundance F     detection threshold as a fraction (default: 0)",
+     "    --min-abundance F     detection threshold as a fraction (default: 0)\n"
+     "    --filter P            drop smallest predicted taxa summing to P% per rank (CAMI-style; default: 0)",
      gradeComposition},
 
     {"grade-classification", 3,

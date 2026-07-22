@@ -60,6 +60,7 @@ bool parseArguments(Parameters &par, int argc, const char **argv, int start, std
         else if (name == "--number") { if (!nextValue(value)) return false; par.sampleNumber = std::atoi(value.c_str()); }
         else if (name == "--ratio") { if (!nextValue(value)) return false; par.sampleRatio = value; }
         else if (name == "--min-abundance") { if (!nextValue(value)) return false; par.minAbundance = std::atof(value.c_str()); }
+        else if (name == "--filter") { if (!nextValue(value)) return false; par.filterPercent = std::atof(value.c_str()); }
         else { err = "Unknown option: " + name; return false; }
     }
     return true;

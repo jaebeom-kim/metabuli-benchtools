@@ -22,6 +22,10 @@
 // reportable given the database -- so a held-out (exclusion) genome only counts at
 // ranks at or coarser than its ExpectedRank, never as a phantom species.
 //
+// --filter P applies the CAMI/OPAL low-abundance filter: within each rank, drop
+// the smallest predicted taxa whose relative abundances sum to <= P% and
+// renormalize, before scoring (removes the noise tail; truth is not filtered).
+//
 // Per (group, rank), the summary reports the mean and sample SD across communities
 // of: L1 distance, Bray-Curtis dissimilarity (= L1/2), Purity (precision), and
 // Completeness (recall). A taxon counts as predicted-present when its estimated
@@ -111,12 +115,33 @@ struct CompMetrics {
     double l1 = 0, bray = 0, purity = 0, completeness = 0;
 };
 
+// CAMI/OPAL-style low-abundance filter: remove the smallest-abundance taxa whose
+// values cumulatively sum to <= filterFrac of the total, in place. The most
+// abundant taxon always survives (its removal would exceed the budget for
+// filterFrac < 1).
+void filterLowAbundance(map<TaxID, double> &dist, double filterFrac) {
+    if (filterFrac <= 0.0 || dist.size() < 2) return;
+    double total = 0.0;
+    for (auto &kv : dist) total += kv.second;
+    if (total <= 0.0) return;
+    double budget = filterFrac * total;
+    vector<pair<double, TaxID>> byVal;
+    byVal.reserve(dist.size());
+    for (auto &kv : dist) byVal.push_back({kv.second, kv.first});
+    sort(byVal.begin(), byVal.end());
+    double removed = 0.0;
+    for (auto &pv : byVal) {
+        if (removed + pv.first <= budget) { removed += pv.first; dist.erase(pv.second); }
+        else break;
+    }
+}
+
 // Grade one profile against one community's truth at one rank.
 CompMetrics gradeOne(TaxonomyWrapper &tax,
                      unordered_map<string, QueryMeta> &queryMeta,
                      const vector<pair<string, double>> &truthRows,
                      const unordered_map<TaxID, double> &taxonReads,
-                     const string &rank, double minAbund,
+                     const string &rank, double minAbund, double filterFrac,
                      set<string> &missingAcc) {
     const int rankIdx = tax.findRankIndex(rank);
 
@@ -147,6 +172,14 @@ CompMetrics gradeOne(TaxonomyWrapper &tax,
         if (r == 0) continue;
         estAtRank[r] += kv.second;
         estTotal += kv.second;
+    }
+
+    // CAMI-style: drop the lowest-abundance predicted taxa summing to filterFrac
+    // of the total, then renormalize over what remains.
+    if (filterFrac > 0.0) {
+        filterLowAbundance(estAtRank, filterFrac);
+        estTotal = 0.0;
+        for (auto &kv : estAtRank) estTotal += kv.second;
     }
 
     set<TaxID> uni;
@@ -198,6 +231,7 @@ int gradeComposition(const Parameters &par) {
         ? vector<string>{"species", "genus"}
         : Util::split(par.testRank, ",");
     const double minAbund = par.minAbundance;
+    const double filterFrac = par.filterPercent / 100.0;
 
     TaxonomyWrapper taxonomy(taxDir + "/names.dmp", taxDir + "/nodes.dmp",
                              taxDir + "/merged.dmp", false);
@@ -284,7 +318,7 @@ int gradeComposition(const Parameters &par) {
 
         for (const string &rank : ranks) {
             data[job.group][rank].push_back(
-                gradeOne(taxonomy, queryMeta, tc->second, taxonReads, rank, minAbund, missingAcc));
+                gradeOne(taxonomy, queryMeta, tc->second, taxonReads, rank, minAbund, filterFrac, missingAcc));
         }
     }
 

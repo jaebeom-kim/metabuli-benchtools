@@ -37,6 +37,7 @@ struct Parameters {
 
     // --- grade-composition ---
     double minAbundance = 0.0;      // --min-abundance : detection threshold (fraction)
+    double filterPercent = 0.0;     // --filter : trim smallest predicted taxa summing to X% per rank (CAMI-style)
 };
 
 // Parse argv (starting at `start`) into `par`. Recognized flags are consumed;
