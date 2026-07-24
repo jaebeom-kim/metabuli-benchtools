@@ -38,6 +38,7 @@ bool parseArguments(Parameters &par, int argc, const char **argv, int start, std
         if (name == "--top-hit-only")   { par.topHitOnly = true; continue; }
         if (name == "--skip-validation") { par.skipValidation = true; continue; }
         if (name == "--score-summary")  { par.scoreSummary = true; continue; }
+        if (name == "--score-hist")     { par.scoreHist = true; continue; }
 
         // Value flags: fetch the value from inline (--flag=value) or the next token.
         auto nextValue = [&](std::string &out) -> bool {
@@ -51,6 +52,7 @@ bool parseArguments(Parameters &par, int argc, const char **argv, int start, std
         if (name == "--read-id-col") { if (!nextValue(value)) return false; par.readIdCol = std::atoi(value.c_str()); }
         else if (name == "--tax-id-col") { if (!nextValue(value)) return false; par.taxidCol = std::atoi(value.c_str()); }
         else if (name == "--score-col") { if (!nextValue(value)) return false; par.scoreCol = std::atoi(value.c_str()); }
+        else if (name == "--score-bins") { if (!nextValue(value)) return false; par.scoreBins = std::atoi(value.c_str()); }
         else if (name == "--verbosity") { if (!nextValue(value)) return false; par.verbosity = std::atoi(value.c_str()); }
         else if (name == "--rank") { if (!nextValue(value)) return false; par.testRank = value; }
         else if (name == "--print-cols") { if (!nextValue(value)) return false; par.printColumns = value; }

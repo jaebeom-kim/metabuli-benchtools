@@ -18,6 +18,8 @@ struct Parameters {
     int verbosity = 2;          // --verbosity   : 3 prints per-read decisions
     bool skipSecondary = false; // --skip-secondary
     bool scoreSummary = false;  // --score-summary : also report avg TP/FP score per rank
+    bool scoreHist = false;     // --score-hist : write per-file per-rank TP/FP score histograms
+    int scoreBins = 20;         // --score-bins : histogram bin count over [0,1]
     bool topHitOnly = false;    // --top-hit-only
     std::string testRank;       // --rank        : comma-separated ranks (default set below)
     std::string printColumns;   // --print-cols  : comma-separated column indices to dump for TP/FP/FN

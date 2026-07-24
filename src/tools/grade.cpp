@@ -300,8 +300,8 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
                     numberOfClassifications++;
                 }
 
-                // Read score (kept in lockstep with classList) for --score-summary
-                if (par.scoreSummary) {
+                // Read score (kept in lockstep with classList) for --score-summary/--score-hist
+                if (par.scoreSummary || par.scoreHist) {
                     float sc = 0.0f;
                     if ((size_t) par.scoreCol < fields.size()) {
                         try { sc = stof(fields[par.scoreCol]); } catch (...) { sc = 0.0f; }
@@ -342,7 +342,7 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
                         else if (p == 'X') rank2FpIdx[rank].push_back(j);
                         else if (p == 'N') rank2FnIdx[rank].push_back(j);
                     }
-                    if (par.scoreSummary && (p == 'O' || p == 'X')) {
+                    if ((par.scoreSummary || par.scoreHist) && (p == 'O' || p == 'X')) {
                         // Group by the taxon the read was classified to at this rank.
                         TaxID predAtRank = ncbiTaxonomy.getTaxIdAtRank(classList[j], rank);
                         if (predAtRank != 0) {
@@ -363,6 +363,39 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
             // Calculate the scores
             for (const string &rank: ranks_local) {
                 results[i].countsAtRanks[rank].calculate();
+            }
+
+            // Write per-file, per-rank histograms of per-taxon average scores
+            // (TP and FP), binned over [0,1].
+            if (par.scoreHist) {
+                int nbins = par.scoreBins > 0 ? par.scoreBins : 20;
+                auto binify = [&](const unordered_map<TaxID, double> & sum,
+                                  const unordered_map<TaxID, long> & cnt,
+                                  vector<long> & bins) {
+                    for (const auto & kv : sum) {
+                        auto it = cnt.find(kv.first);
+                        long c = (it == cnt.end()) ? 0 : it->second;
+                        if (c <= 0) continue;
+                        double avg = kv.second / (double) c;
+                        if (avg < 0.0) avg = 0.0;
+                        if (avg > 1.0) avg = 1.0;
+                        int b = (int) (avg * nbins);
+                        if (b >= nbins) b = nbins - 1;
+                        bins[b]++;
+                    }
+                };
+                for (const string & rank : ranks_local) {
+                    vector<long> tpBins(nbins, 0), fpBins(nbins, 0);
+                    binify(results[i].tpTaxonScoreSum[rank], results[i].tpTaxonScoreN[rank], tpBins);
+                    binify(results[i].fpTaxonScoreSum[rank], results[i].fpTaxonScoreN[rank], fpBins);
+                    ofstream hf(readClassificationFileName + "." + rank + ".scorehist.tsv");
+                    hf << "bin_lo\tbin_hi\tTP_taxa\tFP_taxa\n";
+                    for (int b = 0; b < nbins; b++) {
+                        hf << (double) b / nbins << "\t" << (double) (b + 1) / nbins << "\t"
+                           << tpBins[b] << "\t" << fpBins[b] << "\n";
+                    }
+                    hf.close();
+                }
             }
 
             // Write the values of TP, FP, and FN
