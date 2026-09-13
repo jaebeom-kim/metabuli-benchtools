@@ -31,6 +31,11 @@ struct GradeResult{
     // keyed by the true taxon at that rank (rank -> taxon -> value).
     unordered_map<string, unordered_map<TaxID, double>> fnTaxonScoreSum;
     unordered_map<string, unordered_map<TaxID, long>>   fnTaxonScoreN;
+    // Difficulty report: FP reads keyed by the TRUE taxon at the rank (which
+    // taxon the misclassified read really came from). TP/FN by true taxon are
+    // already available above (tpTaxonScoreN keys TP by its correct taxon,
+    // fnTaxonScoreN keys FN by the true taxon). Keyed rank -> taxon -> count.
+    unordered_map<string, unordered_map<TaxID, long>>   fpByTruthN;
 };
 
 // Two-level score summary: average the score within each taxon, then take the
@@ -129,6 +134,86 @@ static void writeTaxonomicReport(const string & path,
             sort(kids.begin(), kids.end(),
                  [](const pair<TaxID, long> & a, const pair<TaxID, long> & b) { return a.second < b.second; });
             for (const auto & k : kids) stack.emplace_back(k.first, depth + 1);
+        }
+    }
+    rf.close();
+}
+
+// Write a hierarchical "difficulty" report: every misclassified read (FP or FN)
+// attributed to its TRUE taxon, so you can see which taxa are hard to classify.
+// TP/FP/FN counts (all keyed by true taxon) are rolled up the lineage; each node
+// shows clade totals and error_rate = (FP+FN)/total. Emitted depth-first from the
+// root, siblings ordered by difficulty (error rate, then size) so the hardest
+// lineages float to the top. `minReads` demotes tiny-sample taxa whose rate is
+// noise (e.g. 2 reads, both wrong -> 100%).
+static void writeDifficultyReport(const string & path,
+                                  TaxonomyWrapper & tax,
+                                  const unordered_map<TaxID, vector<TaxID>> & parentToChildren,
+                                  const unordered_map<TaxID, long> & tpByTruth,
+                                  const unordered_map<TaxID, long> & fpByTruth,
+                                  const unordered_map<TaxID, long> & fnByTruth,
+                                  long minReads) {
+    unordered_map<TaxID, long> cTP, cFP, cFN;
+    auto rollup = [&](const unordered_map<TaxID, long> & src, unordered_map<TaxID, long> & dst) {
+        for (const auto & kv : src) {
+            const TaxID leaf = kv.first;
+            const long c = kv.second;
+            if (c <= 0) continue;
+            dst[leaf] += c;
+            if (tax.nodeExists(leaf)) {
+                const TaxonNode * node = tax.taxonNode(leaf);
+                while (node->parentTaxId != node->taxId && tax.nodeExists(node->parentTaxId)) {
+                    node = tax.taxonNode(node->parentTaxId);
+                    dst[node->taxId] += c;
+                }
+            }
+        }
+    };
+    rollup(tpByTruth, cTP);
+    rollup(fpByTruth, cFP);
+    rollup(fnByTruth, cFN);
+
+    auto at = [](const unordered_map<TaxID, long> & m, TaxID t) -> long {
+        auto it = m.find(t); return it == m.end() ? 0 : it->second;
+    };
+    auto total  = [&](TaxID t) -> long { return at(cTP, t) + at(cFP, t) + at(cFN, t); };
+    auto errors = [&](TaxID t) -> long { return at(cFP, t) + at(cFN, t); };
+
+    ofstream rf(path);
+    rf << "#error_rate\ttotal\tTP\tFP\tFN\trank\ttaxID\tname\n";
+    if (total(1) == 0) { rf.close(); return; }
+    rf << std::fixed << std::setprecision(4);
+
+    vector<pair<TaxID, int>> stack;
+    stack.emplace_back(1, 0);
+    while (!stack.empty()) {
+        const TaxID tid = stack.back().first;
+        const int depth = stack.back().second;
+        stack.pop_back();
+        const long tot = total(tid);
+        if (tot <= 0) continue;
+        const long tp = at(cTP, tid), fp = at(cFP, tid), fn = at(cFN, tid);
+        const double rate = (double) (fp + fn) / (double) tot;
+        const TaxonNode * node = tax.taxonNode(tid, false);
+        const char * rank = node ? tax.getString(node->rankIdx) : "no rank";
+        const char * name = node ? tax.getString(node->nameIdx) : "";
+        rf << rate << "\t" << tot << "\t" << tp << "\t" << fp << "\t" << fn << "\t"
+           << rank << "\t" << tid << "\t" << string(2 * depth, ' ') << name << "\n";
+        auto chIt = parentToChildren.find(tid);
+        if (chIt != parentToChildren.end()) {
+            vector<TaxID> kids;
+            for (const TaxID k : chIt->second) if (total(k) > 0) kids.push_back(k);
+            // Ascending difficulty so the hardest child is popped (printed) first.
+            sort(kids.begin(), kids.end(), [&](TaxID a, TaxID b) {
+                const long ta = total(a), tb = total(b);
+                const bool qa = ta >= minReads, qb = tb >= minReads;
+                if (qa != qb) return qa < qb; // below-threshold taxa are "less difficult"
+                const double ra = (double) errors(a) / (double) ta;
+                const double rb = (double) errors(b) / (double) tb;
+                if (ra != rb) return ra < rb;
+                return ta < tb;
+            });
+            for (const TaxID k : kids) stack.emplace_back(k, depth + 1);
         }
     }
     rf.close();
@@ -471,6 +556,13 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
                                 } else { // 'X'
                                     results[i].fpTaxonScoreSum[rank][predAtRank] += scores[j];
                                     results[i].fpTaxonScoreN[rank][predAtRank]++;
+                                    // Also attribute the FP to its true taxon (difficulty report).
+                                    if (writeReports && rightAnswers[j] > 0) {
+                                        TaxID trueAtRank = ncbiTaxonomy.getTaxIdAtRank(rightAnswers[j], rank);
+                                        if (trueAtRank != 0) {
+                                            results[i].fpByTruthN[rank][trueAtRank]++;
+                                        }
+                                    }
                                 }
                             }
                         } else if (p == 'N' && writeReports) {
@@ -542,6 +634,12 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
                     writeTaxonomicReport(readClassificationFileName + "." + rank + ".fn_report.tsv",
                                          ncbiTaxonomy, parentToChildren,
                                          results[i].fnTaxonScoreN[rank], results[i].fnTaxonScoreSum[rank]);
+                    // Per-true-taxon difficulty: every error (FP+FN) attributed
+                    // to the taxon the read really came from.
+                    writeDifficultyReport(readClassificationFileName + "." + rank + ".difficulty_report.tsv",
+                                          ncbiTaxonomy, parentToChildren,
+                                          results[i].tpTaxonScoreN[rank], results[i].fpByTruthN[rank],
+                                          results[i].fnTaxonScoreN[rank], 10);
                 }
             }
 

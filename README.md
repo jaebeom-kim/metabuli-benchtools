@@ -183,6 +183,19 @@ rank (which taxa collect true / false positives); FN is keyed by the **true**
 taxon (which taxa get missed). `avg_score` uses `--score-col` (FN reads are often
 unclassified, so their scores may be 0).
 
+A fourth report, `<classificationFile>.<rank>.difficulty_report.tsv`, attributes
+**every error (FP + FN) to the read's true taxon** — i.e. which taxa are hard to
+classify. Same indented-tree layout, keyed entirely by the true taxon:
+
+```
+#error_rate  total  TP  FP  FN  rank  taxID  name
+```
+
+`total` = TP + FP + FN reads truly belonging to that clade, `error_rate` =
+(FP + FN) / total. Siblings are ordered by descending difficulty (error rate,
+then size), so the hardest lineages surface first; taxa with fewer than 10 reads
+are demoted so a 2-read, 100%-error taxon does not top the list.
+
 ### grade-classification — grouped per-read classification
 
 The multi-tool version of `grade`: grades many tools × communities in one run and
