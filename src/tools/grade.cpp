@@ -10,6 +10,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <cmath>
+#include <algorithm>
 
 #ifdef OPENMP
 #include <omp.h>
@@ -25,6 +26,10 @@ struct GradeResult{
     // Keyed rank -> taxon -> value.
     unordered_map<string, unordered_map<TaxID, double>> tpTaxonScoreSum, fpTaxonScoreSum;
     unordered_map<string, unordered_map<TaxID, long>>   tpTaxonScoreN,   fpTaxonScoreN;
+    // --rank reports: FN reads have no valid prediction at the rank, so they are
+    // keyed by the true taxon at that rank (rank -> taxon -> value).
+    unordered_map<string, unordered_map<TaxID, double>> fnTaxonScoreSum;
+    unordered_map<string, unordered_map<TaxID, long>>   fnTaxonScoreN;
 };
 
 // Two-level score summary: average the score within each taxon, then take the
@@ -138,6 +143,10 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
         string readClassificationFileName;
 
         vector<string> ranks_local = ranks;
+
+        // --rank reports: emit per-taxon TP/FP/FN summaries when the user asked
+        // for specific ranks (i.e. --rank was passed).
+        const bool writeReports = !par.testRank.empty();
 
         TaxonomyWrapper ncbiTaxonomy(names, nodes, merged, false);
         cout << "Taxonomy loaded" << endl;
@@ -323,8 +332,8 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
                     numberOfClassifications++;
                 }
 
-                // Read score (kept in lockstep with classList) for --score-summary/--score-hist
-                if (par.scoreSummary || par.scoreHist) {
+                // Read score (kept in lockstep with classList) for --score-summary/--score-hist/--rank reports
+                if (par.scoreSummary || par.scoreHist || writeReports) {
                     float sc = 0.0f;
                     if ((size_t) par.scoreCol < fields.size()) {
                         try { sc = stof(fields[par.scoreCol]); } catch (...) { sc = 0.0f; }
@@ -365,16 +374,27 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
                         else if (p == 'X') rank2FpIdx[rank].push_back(j);
                         else if (p == 'N') rank2FnIdx[rank].push_back(j);
                     }
-                    if ((par.scoreSummary || par.scoreHist) && (p == 'O' || p == 'X')) {
-                        // Group by the taxon the read was classified to at this rank.
-                        TaxID predAtRank = ncbiTaxonomy.getTaxIdAtRank(classList[j], rank);
-                        if (predAtRank != 0) {
-                            if (p == 'O') {
-                                results[i].tpTaxonScoreSum[rank][predAtRank] += scores[j];
-                                results[i].tpTaxonScoreN[rank][predAtRank]++;
-                            } else { // 'X'
-                                results[i].fpTaxonScoreSum[rank][predAtRank] += scores[j];
-                                results[i].fpTaxonScoreN[rank][predAtRank]++;
+                    if (par.scoreSummary || par.scoreHist || writeReports) {
+                        if (p == 'O' || p == 'X') {
+                            // TP/FP: group by the taxon the read was classified to at this rank.
+                            TaxID predAtRank = ncbiTaxonomy.getTaxIdAtRank(classList[j], rank);
+                            if (predAtRank != 0) {
+                                if (p == 'O') {
+                                    results[i].tpTaxonScoreSum[rank][predAtRank] += scores[j];
+                                    results[i].tpTaxonScoreN[rank][predAtRank]++;
+                                } else { // 'X'
+                                    results[i].fpTaxonScoreSum[rank][predAtRank] += scores[j];
+                                    results[i].fpTaxonScoreN[rank][predAtRank]++;
+                                }
+                            }
+                        } else if (p == 'N' && writeReports) {
+                            // FN: no valid prediction at this rank, so group by the true taxon.
+                            if (rightAnswers[j] > 0) {
+                                TaxID trueAtRank = ncbiTaxonomy.getTaxIdAtRank(rightAnswers[j], rank);
+                                if (trueAtRank != 0) {
+                                    results[i].fnTaxonScoreSum[rank][trueAtRank] += scores[j];
+                                    results[i].fnTaxonScoreN[rank][trueAtRank]++;
+                                }
                             }
                         }
                     }
@@ -418,6 +438,42 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
                            << tpBins[b] << "\t" << fpBins[b] << "\n";
                     }
                     hf.close();
+                }
+            }
+
+            // Write per-file, per-rank per-taxon TP/FP/FN summary reports.
+            // TP/FP are keyed by the predicted taxon at the rank, FN by the true
+            // taxon. Rows are sorted by read count (descending).
+            if (writeReports) {
+                auto writeTaxonReport = [&](const string & path,
+                                            const unordered_map<TaxID, double> & sum,
+                                            const unordered_map<TaxID, long> & cnt) {
+                    vector<pair<TaxID, long>> rows;
+                    rows.reserve(cnt.size());
+                    for (const auto & kv : cnt) rows.emplace_back(kv.first, kv.second);
+                    sort(rows.begin(), rows.end(),
+                         [](const pair<TaxID, long> & a, const pair<TaxID, long> & b) {
+                             return a.second > b.second;
+                         });
+                    ofstream rf(path);
+                    rf << "taxid\tname\tcount\tmean_score\n";
+                    for (const auto & r : rows) {
+                        double meanScore = 0.0;
+                        auto it = sum.find(r.first);
+                        if (it != sum.end() && r.second > 0) meanScore = it->second / (double) r.second;
+                        const TaxonNode * node = ncbiTaxonomy.taxonNode(r.first, false);
+                        const char * name = node ? ncbiTaxonomy.getString(node->nameIdx) : "";
+                        rf << r.first << "\t" << name << "\t" << r.second << "\t" << meanScore << "\n";
+                    }
+                    rf.close();
+                };
+                for (const string & rank : ranks_local) {
+                    writeTaxonReport(readClassificationFileName + "." + rank + ".tp_report.tsv",
+                                     results[i].tpTaxonScoreSum[rank], results[i].tpTaxonScoreN[rank]);
+                    writeTaxonReport(readClassificationFileName + "." + rank + ".fp_report.tsv",
+                                     results[i].fpTaxonScoreSum[rank], results[i].fpTaxonScoreN[rank]);
+                    writeTaxonReport(readClassificationFileName + "." + rank + ".fn_report.tsv",
+                                     results[i].fnTaxonScoreSum[rank], results[i].fnTaxonScoreN[rank]);
                 }
             }
 
