@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <algorithm>
+#include <iomanip>
 
 #ifdef OPENMP
 #include <omp.h>
@@ -54,6 +55,83 @@ static void macroScore(const unordered_map<TaxID, double> & sum,
     double ss = 0.0;
     for (double a : avgs) ss += (a - mean) * (a - mean);
     sd = std::sqrt(ss / (double) (avgs.size() - 1));
+}
+
+// Write a Kraken/Metabuli-style hierarchical report from per-taxon read counts.
+// `taxonCount` / `taxonScoreSum` are keyed by the leaf taxon (the tested rank);
+// counts and score sums are rolled up the lineage to clade totals, then the tree
+// is emitted depth-first from the root, indented by depth, siblings ordered by
+// descending clade count. Column layout matches Metabuli's classify _report.tsv:
+//   clade_proportion  clade_count  taxon_count  avg_score  rank  taxID  name
+static void writeTaxonomicReport(const string & path,
+                                 TaxonomyWrapper & tax,
+                                 const unordered_map<TaxID, vector<TaxID>> & parentToChildren,
+                                 const unordered_map<TaxID, long> & taxonCount,
+                                 const unordered_map<TaxID, double> & taxonScoreSum) {
+    unordered_map<TaxID, long>   cladeCount;
+    unordered_map<TaxID, double> cladeScoreSum;
+    long total = 0;
+    for (const auto & kv : taxonCount) {
+        const TaxID leaf = kv.first;
+        const long c = kv.second;
+        if (c <= 0) continue;
+        double s = 0.0;
+        auto sit = taxonScoreSum.find(leaf);
+        if (sit != taxonScoreSum.end()) s = sit->second;
+        total += c;
+        cladeCount[leaf] += c;
+        cladeScoreSum[leaf] += s;
+        if (tax.nodeExists(leaf)) {
+            const TaxonNode * node = tax.taxonNode(leaf);
+            while (node->parentTaxId != node->taxId && tax.nodeExists(node->parentTaxId)) {
+                node = tax.taxonNode(node->parentTaxId);
+                cladeCount[node->taxId]    += c;
+                cladeScoreSum[node->taxId] += s;
+            }
+        }
+    }
+
+    ofstream rf(path);
+    rf << "#clade_proportion\tclade_count\ttaxon_count\tavg_score\trank\ttaxID\tname\n";
+    if (total == 0) { rf.close(); return; }
+    rf << std::fixed << std::setprecision(4);
+
+    // Depth-first from the root (taxID 1). Push children in ascending clade
+    // count so the largest is popped (and printed) first.
+    vector<pair<TaxID, int>> stack;
+    stack.emplace_back(1, 0);
+    while (!stack.empty()) {
+        const TaxID tid = stack.back().first;
+        const int depth = stack.back().second;
+        stack.pop_back();
+        auto ccIt = cladeCount.find(tid);
+        if (ccIt == cladeCount.end() || ccIt->second <= 0) continue;
+        const long cc = ccIt->second;
+        long tc = 0;
+        auto tcIt = taxonCount.find(tid);
+        if (tcIt != taxonCount.end()) tc = tcIt->second;
+        double avg = 0.0;
+        auto csIt = cladeScoreSum.find(tid);
+        if (csIt != cladeScoreSum.end()) avg = csIt->second / (double) cc;
+        const TaxonNode * node = tax.taxonNode(tid, false);
+        const char * rank = node ? tax.getString(node->rankIdx) : "no rank";
+        const char * name = node ? tax.getString(node->nameIdx) : "";
+        rf << 100.0 * (double) cc / (double) total << "\t" << cc << "\t" << tc << "\t"
+           << avg << "\t" << rank << "\t" << tid << "\t"
+           << string(2 * depth, ' ') << name << "\n";
+        auto chIt = parentToChildren.find(tid);
+        if (chIt != parentToChildren.end()) {
+            vector<pair<TaxID, long>> kids;
+            for (const TaxID k : chIt->second) {
+                auto it = cladeCount.find(k);
+                if (it != cladeCount.end() && it->second > 0) kids.emplace_back(k, it->second);
+            }
+            sort(kids.begin(), kids.end(),
+                 [](const pair<TaxID, long> & a, const pair<TaxID, long> & b) { return a.second < b.second; });
+            for (const auto & k : kids) stack.emplace_back(k.first, depth + 1);
+        }
+    }
+    rf.close();
 }
 
 struct Score2{
@@ -150,6 +228,13 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
 
         TaxonomyWrapper ncbiTaxonomy(names, nodes, merged, false);
         cout << "Taxonomy loaded" << endl;
+
+        // Parent -> children adjacency, built once per thread, for the
+        // hierarchical --rank reports.
+        unordered_map<TaxID, vector<TaxID>> parentToChildren;
+        if (writeReports) {
+            parentToChildren = ncbiTaxonomy.getParentToChildren();
+        }
 
         // Print scores of TP and FP
         unordered_map<string, vector<size_t>> rank2TpIdx;
@@ -341,11 +426,12 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
                     scores.push_back(sc);
                 }
 
-                // Read column for printing
+                // Read column for printing (guard against short lines, e.g.
+                // unclassified reads that have fewer columns than requested)
                 if (!printColumnsIdx.empty()) {
                     vector<string> values;
                     for (const auto &idx: printColumnsIdx) {
-                        values.push_back(fields[idx]);
+                        values.push_back(idx < fields.size() ? fields[idx] : string());
                     }
                     idx2values.push_back(values);
                 }
@@ -441,39 +527,21 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
                 }
             }
 
-            // Write per-file, per-rank per-taxon TP/FP/FN summary reports.
-            // TP/FP are keyed by the predicted taxon at the rank, FN by the true
-            // taxon. Rows are sorted by read count (descending).
+            // Write per-file, per-rank hierarchical TP/FP/FN reports (Metabuli
+            // classify _report.tsv layout). TP/FP are keyed by the predicted
+            // taxon at the rank, FN by the true taxon; counts are rolled up the
+            // taxonomy and emitted as an indented tree.
             if (writeReports) {
-                auto writeTaxonReport = [&](const string & path,
-                                            const unordered_map<TaxID, double> & sum,
-                                            const unordered_map<TaxID, long> & cnt) {
-                    vector<pair<TaxID, long>> rows;
-                    rows.reserve(cnt.size());
-                    for (const auto & kv : cnt) rows.emplace_back(kv.first, kv.second);
-                    sort(rows.begin(), rows.end(),
-                         [](const pair<TaxID, long> & a, const pair<TaxID, long> & b) {
-                             return a.second > b.second;
-                         });
-                    ofstream rf(path);
-                    rf << "taxid\tname\tcount\tmean_score\n";
-                    for (const auto & r : rows) {
-                        double meanScore = 0.0;
-                        auto it = sum.find(r.first);
-                        if (it != sum.end() && r.second > 0) meanScore = it->second / (double) r.second;
-                        const TaxonNode * node = ncbiTaxonomy.taxonNode(r.first, false);
-                        const char * name = node ? ncbiTaxonomy.getString(node->nameIdx) : "";
-                        rf << r.first << "\t" << name << "\t" << r.second << "\t" << meanScore << "\n";
-                    }
-                    rf.close();
-                };
                 for (const string & rank : ranks_local) {
-                    writeTaxonReport(readClassificationFileName + "." + rank + ".tp_report.tsv",
-                                     results[i].tpTaxonScoreSum[rank], results[i].tpTaxonScoreN[rank]);
-                    writeTaxonReport(readClassificationFileName + "." + rank + ".fp_report.tsv",
-                                     results[i].fpTaxonScoreSum[rank], results[i].fpTaxonScoreN[rank]);
-                    writeTaxonReport(readClassificationFileName + "." + rank + ".fn_report.tsv",
-                                     results[i].fnTaxonScoreSum[rank], results[i].fnTaxonScoreN[rank]);
+                    writeTaxonomicReport(readClassificationFileName + "." + rank + ".tp_report.tsv",
+                                         ncbiTaxonomy, parentToChildren,
+                                         results[i].tpTaxonScoreN[rank], results[i].tpTaxonScoreSum[rank]);
+                    writeTaxonomicReport(readClassificationFileName + "." + rank + ".fp_report.tsv",
+                                         ncbiTaxonomy, parentToChildren,
+                                         results[i].fpTaxonScoreN[rank], results[i].fpTaxonScoreSum[rank]);
+                    writeTaxonomicReport(readClassificationFileName + "." + rank + ".fn_report.tsv",
+                                         ncbiTaxonomy, parentToChildren,
+                                         results[i].fnTaxonScoreN[rank], results[i].fnTaxonScoreSum[rank]);
                 }
             }
 

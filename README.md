@@ -168,12 +168,20 @@ Key options: `--test-type` (`gtdb` [default], `cami`, `cami-long`, `cami-euk`,
 `--skip-secondary`, `--threads`.
 
 Passing `--rank` also writes, per classification file and per requested rank,
-three per-taxon summary reports — `<classificationFile>.<rank>.tp_report.tsv`,
-`.fp_report.tsv`, and `.fn_report.tsv`. Each has columns `taxid  name  count
-mean_score`, sorted by `count` (descending). TP and FP rows are keyed by the
-**predicted** taxon at the rank (which taxa collect true / false positives); FN
-rows are keyed by the **true** taxon (which taxa get missed). `mean_score` uses
-`--score-col` (FN reads are often unclassified, so their scores may be 0).
+three hierarchical reports — `<classificationFile>.<rank>.tp_report.tsv`,
+`.fp_report.tsv`, and `.fn_report.tsv` — in the same indented-tree layout as
+Metabuli's `classify` `_report.tsv`:
+
+```
+#clade_proportion  clade_count  taxon_count  avg_score  rank  taxID  name
+```
+
+Per-taxon read counts (and scores) are rolled up the taxonomy and emitted
+depth-first from the root, with the name indented by depth and siblings ordered
+by descending clade count. TP and FP are keyed by the **predicted** taxon at the
+rank (which taxa collect true / false positives); FN is keyed by the **true**
+taxon (which taxa get missed). `avg_score` uses `--score-col` (FN reads are often
+unclassified, so their scores may be 0).
 
 ### grade-classification — grouped per-read classification
 
