@@ -178,16 +178,39 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
             ifstream map;
             map.open(mappingFile);
             if (map.is_open()) {
-                while (getline(map, key, '\t')) {
-                    getline(map, value, '\n');
-                    if (par.testType != "kapk") {
-                        // remove version number
-                        size_t pos = key.find('.');
-                        if (pos != string::npos) {
-                            key = key.substr(0, pos);
+                if (par.testType == "cami") {
+                    // CAMI gold-standard read mapping:
+                    // #anonymous_read_id\tgenome_id\ttax_id\tread_id
+                    string mappingLine;
+                    while (getline(map, mappingLine)) {
+                        if (mappingLine.empty() || mappingLine[0] == '#') {
+                            continue; // skip header/comment lines
                         }
+                        vector<string> cols = Util::split(mappingLine, "\t");
+                        if (cols.size() < 3) {
+                            continue;
+                        }
+                        // key = anonymous_read_id (strip pair suffix to match the
+                        // classification-side ID parsing), value = tax_id (col 3)
+                        string readId = cols[0];
+                        size_t pos = readId.find('/');
+                        if (pos != string::npos) {
+                            readId = readId.substr(0, pos);
+                        }
+                        assacc2taxid[readId] = stoi(cols[2]);
                     }
-                    assacc2taxid[key] = stoi(value);
+                } else {
+                    while (getline(map, key, '\t')) {
+                        getline(map, value, '\n');
+                        if (par.testType != "kapk") {
+                            // remove version number
+                            size_t pos = key.find('.');
+                            if (pos != string::npos) {
+                                key = key.substr(0, pos);
+                            }
+                        }
+                        assacc2taxid[key] = stoi(value);
+                    }
                 }
             } else {
                 cout << "Cannot open file for answer" << endl;
