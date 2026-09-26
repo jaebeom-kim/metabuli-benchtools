@@ -313,6 +313,12 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
         // for specific ranks (i.e. --rank was passed).
         const bool writeReports = !par.testRank.empty();
 
+        // Per-read TP/FP/FN dumps are written when column indices are requested
+        // (--print-cols) and/or the true taxid columns are requested
+        // (--print-correct-taxid).
+        const bool printCorrect = par.printCorrectTaxid;
+        const bool writePerReadFiles = !printColumnsIdx.empty() || printCorrect;
+
         TaxonomyWrapper ncbiTaxonomy(names, nodes, merged, false);
         cout << "Taxonomy loaded" << endl;
 
@@ -328,7 +334,7 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
         unordered_map<string, vector<size_t>> rank2FpIdx;
         unordered_map<string, vector<size_t>> rank2FnIdx;
         vector<vector<string>> idx2values;
-        if (!printColumnsIdx.empty()){
+        if (writePerReadFiles){
             for (const auto & rank : ranks_local) {
                 rank2TpIdx[rank] = vector<size_t>();
                 rank2FpIdx[rank] = vector<size_t>();
@@ -344,7 +350,7 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
             classList.clear();
             readIds.clear();
             scores.clear();
-            if (!printColumnsIdx.empty()){
+            if (writePerReadFiles){
                 for (const auto & rank : ranks_local) {
                     rank2TpIdx[rank].clear();
                     rank2FpIdx[rank].clear();
@@ -542,7 +548,7 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
                         p = compareTaxonAtRank_CAMI(classList[j], rightAnswers[j], ncbiTaxonomy,
                                                          results[i].countsAtRanks[rank], rank);
                     }
-                    if (!printColumnsIdx.empty()) {
+                    if (writePerReadFiles) {
                         if (p == 'O') rank2TpIdx[rank].push_back(j);
                         else if (p == 'X') rank2FpIdx[rank].push_back(j);
                         else if (p == 'N') rank2FnIdx[rank].push_back(j);
@@ -652,41 +658,34 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
                 }
             }
 
-            // Write the values of TP, FP, and FN
-            if (!printColumnsIdx.empty()) {
+            // Write the per-read values of TP, FP, and FN. Each line holds the
+            // requested --print-cols values (if any) followed, when
+            // --print-correct-taxid is set, by the true taxid and the true taxid
+            // at the graded rank.
+            if (writePerReadFiles) {
                 for (const string & rank : ranks_local) {
-                    // TP
-                    ofstream tpFile;
-                    tpFile.open(readClassificationFileName + "." + rank + ".tp");
-                    for (const auto & idx : rank2TpIdx[rank]) {
-                        for (const auto & value : idx2values[idx]) {
-                            tpFile << value << "\t";
+                    auto writeCategory = [&](const string & suffix, const vector<size_t> & idxs) {
+                        ofstream f(readClassificationFileName + "." + rank + "." + suffix);
+                        for (const auto & idx : idxs) {
+                            if (!printColumnsIdx.empty()) {
+                                for (const auto & value : idx2values[idx]) {
+                                    f << value << "\t";
+                                }
+                            }
+                            if (printCorrect) {
+                                const TaxID correct = rightAnswers[idx];
+                                const TaxID correctAtRank =
+                                    (correct > 0 && ncbiTaxonomy.nodeExists(correct))
+                                        ? ncbiTaxonomy.getTaxIdAtRank(correct, rank) : 0;
+                                f << correct << "\t" << correctAtRank << "\t";
+                            }
+                            f << "\n";
                         }
-                        tpFile << endl;
-                    }
-                    tpFile.close();
-
-                    // FP
-                    ofstream fpFile;
-                    fpFile.open(readClassificationFileName + "." + rank + ".fp");
-                    for (const auto & idx : rank2FpIdx[rank]) {
-                        for (const auto & value : idx2values[idx]) {
-                            fpFile << value << "\t";
-                        }
-                        fpFile << endl;
-                    }
-                    fpFile.close();
-
-                    // FN
-                    ofstream fnFile;
-                    fnFile.open(readClassificationFileName + "." + rank + ".fn");
-                    for (const auto & idx : rank2FnIdx[rank]) {
-                        for (const auto & value : idx2values[idx]) {
-                            fnFile << value << "\t";
-                        }
-                        fnFile << endl;
-                    }
-                    fnFile.close();
+                        f.close();
+                    };
+                    writeCategory("tp", rank2TpIdx[rank]);
+                    writeCategory("fp", rank2FpIdx[rank]);
+                    writeCategory("fn", rank2FnIdx[rank]);
                 }
             }
 

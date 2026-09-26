@@ -204,6 +204,14 @@ classify. Same indented-tree layout, keyed entirely by the true taxon:
 then size), so the hardest lineages surface first; taxa with fewer than 10 reads
 are demoted so a 2-read, 100%-error taxon does not top the list.
 
+For read-level inspection, `--print-cols i,j,k` writes, per rank, the reads in
+each category to `<classificationFile>.<rank>.tp` / `.fp` / `.fn`, each line
+holding those (0-based) columns copied from the classification result. Adding
+`--print-correct-taxid` appends two more columns to every such line — the read's
+true taxid and the true taxid at the graded rank — so an FP line shows both what
+the read was called and what it should have been. `--print-correct-taxid` also
+works on its own (without `--print-cols`), writing just those two columns.
+
 ### grade-classification — grouped per-read classification
 
 The multi-tool version of `grade`: grades many tools × communities in one run and

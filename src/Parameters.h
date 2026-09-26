@@ -23,6 +23,7 @@ struct Parameters {
     bool topHitOnly = false;    // --top-hit-only
     std::string testRank;       // --rank        : comma-separated ranks (default set below)
     std::string printColumns;   // --print-cols  : comma-separated column indices to dump for TP/FP/FN
+    bool printCorrectTaxid = false; // --print-correct-taxid : append true taxid and true taxid-at-rank to TP/FP/FN dumps
 
     // --- shared ---
     int threads = 1;            // --threads
