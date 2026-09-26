@@ -31,10 +31,12 @@ struct GradeResult{
     // keyed by the true taxon at that rank (rank -> taxon -> value).
     unordered_map<string, unordered_map<TaxID, double>> fnTaxonScoreSum;
     unordered_map<string, unordered_map<TaxID, long>>   fnTaxonScoreN;
-    // Difficulty report: FP reads keyed by the TRUE taxon at the rank (which
-    // taxon the misclassified read really came from). TP/FN by true taxon are
-    // already available above (tpTaxonScoreN keys TP by its correct taxon,
-    // fnTaxonScoreN keys FN by the true taxon). Keyed rank -> taxon -> count.
+    // FP reads keyed by the TRUE taxon at the rank (which taxon the misclassified
+    // read really came from) — used by the difficulty report and the
+    // fp_by_truth report. TP/FN by true taxon are already available above
+    // (tpTaxonScoreN keys TP by its correct taxon, fnTaxonScoreN keys FN by the
+    // true taxon). Keyed rank -> taxon -> value.
+    unordered_map<string, unordered_map<TaxID, double>> fpByTruthSum;
     unordered_map<string, unordered_map<TaxID, long>>   fpByTruthN;
 };
 
@@ -556,10 +558,12 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
                                 } else { // 'X'
                                     results[i].fpTaxonScoreSum[rank][predAtRank] += scores[j];
                                     results[i].fpTaxonScoreN[rank][predAtRank]++;
-                                    // Also attribute the FP to its true taxon (difficulty report).
+                                    // Also attribute the FP to its true taxon
+                                    // (difficulty and fp_by_truth reports).
                                     if (writeReports && rightAnswers[j] > 0) {
                                         TaxID trueAtRank = ncbiTaxonomy.getTaxIdAtRank(rightAnswers[j], rank);
                                         if (trueAtRank != 0) {
+                                            results[i].fpByTruthSum[rank][trueAtRank] += scores[j];
                                             results[i].fpByTruthN[rank][trueAtRank]++;
                                         }
                                     }
@@ -631,6 +635,11 @@ par, cout, printColumnsIdx, cerr, names, nodes, merged)
                     writeTaxonomicReport(readClassificationFileName + "." + rank + ".fp_report.tsv",
                                          ncbiTaxonomy, parentToChildren,
                                          results[i].fpTaxonScoreN[rank], results[i].fpTaxonScoreSum[rank]);
+                    // Same FP reads, but keyed by their TRUE taxon (which taxa are
+                    // being missed / mislabelled), not the wrongly predicted one.
+                    writeTaxonomicReport(readClassificationFileName + "." + rank + ".fp_by_truth_report.tsv",
+                                         ncbiTaxonomy, parentToChildren,
+                                         results[i].fpByTruthN[rank], results[i].fpByTruthSum[rank]);
                     writeTaxonomicReport(readClassificationFileName + "." + rank + ".fn_report.tsv",
                                          ncbiTaxonomy, parentToChildren,
                                          results[i].fnTaxonScoreN[rank], results[i].fnTaxonScoreSum[rank]);

@@ -168,9 +168,9 @@ Key options: `--test-type` (`gtdb` [default], `cami`, `cami-long`, `cami-euk`,
 `--skip-secondary`, `--threads`.
 
 Passing `--rank` also writes, per classification file and per requested rank,
-three hierarchical reports — `<classificationFile>.<rank>.tp_report.tsv`,
-`.fp_report.tsv`, and `.fn_report.tsv` — in the same indented-tree layout as
-Metabuli's `classify` `_report.tsv`:
+hierarchical reports — `<classificationFile>.<rank>.tp_report.tsv`,
+`.fp_report.tsv`, `.fp_by_truth_report.tsv`, and `.fn_report.tsv` — in the same
+indented-tree layout as Metabuli's `classify` `_report.tsv`:
 
 ```
 #clade_proportion  clade_count  taxon_count  avg_score  rank  taxID  name
@@ -178,10 +178,18 @@ Metabuli's `classify` `_report.tsv`:
 
 Per-taxon read counts (and scores) are rolled up the taxonomy and emitted
 depth-first from the root, with the name indented by depth and siblings ordered
-by descending clade count. TP and FP are keyed by the **predicted** taxon at the
-rank (which taxa collect true / false positives); FN is keyed by the **true**
-taxon (which taxa get missed). `avg_score` uses `--score-col` (FN reads are often
-unclassified, so their scores may be 0).
+by descending clade count. TP and FP (`fp_report.tsv`) are keyed by the
+**predicted** taxon at the rank (which taxa collect true / false positives);
+`fp_by_truth_report.tsv` keys the *same* FP reads by their **true** taxon (which
+taxa are being mislabelled); FN is keyed by the **true** taxon (which taxa get
+missed).
+
+`avg_score` is the mean over the clade of the column chosen by `--score-col`.
+That flag **defaults to column 0**, which in a Metabuli result is the
+`is_classified` flag — always `1` for classified reads, so TP/FP `avg_score`
+comes out `1` everywhere until you point `--score-col` at the real score column
+(e.g. `--score-col 4` for the DNA score). FN reads are often unclassified, so
+their scores may be 0.
 
 A fourth report, `<classificationFile>.<rank>.difficulty_report.tsv`, attributes
 **every error (FP + FN) to the read's true taxon** — i.e. which taxa are hard to
