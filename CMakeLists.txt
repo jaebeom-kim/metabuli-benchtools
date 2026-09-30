@@ -22,6 +22,7 @@ add_executable(benchtools
     src/tools/sampleQueries.cpp
     src/tools/gradeComposition.cpp
     src/tools/gradeClassification.cpp
+    src/tools/taxidReport.cpp
 )
 
 target_include_directories(benchtools PRIVATE

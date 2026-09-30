@@ -10,6 +10,7 @@ int split(const Parameters &par);
 int sampleQueries(const Parameters &par);
 int gradeComposition(const Parameters &par);
 int gradeClassification(const Parameters &par);
+int taxidReport(const Parameters &par);
 
 namespace {
 
@@ -90,6 +91,18 @@ const std::vector<Tool> TOOLS = {
      "    --min-abundance F     detection threshold as a fraction (default: 0)\n"
      "    --filter P            drop smallest predicted taxa summing to P% per rank (CAMI-style; default: 0)",
      gradeComposition},
+
+    {"taxid-report", 2,
+     "taxid-report <taxidList> <taxonomyDir> [outReport]\n"
+     "    Turn a list of taxonomy IDs into a Kraken/Metabuli-style hierarchical\n"
+     "    report. Each input line counts as one read at its taxon; counts are\n"
+     "    rolled up the taxonomy and printed as an indented tree.\n"
+     "    <taxidList>           file with one taxid per line (first token of each\n"
+     "                          line; blank/'#' lines skipped; 0 = unclassified)\n"
+     "    <taxonomyDir>         directory with names.dmp, nodes.dmp, merged.dmp\n"
+     "    [outReport]           output path (default: stdout)\n"
+     "  Output columns: clade_proportion  clade_count  taxon_count  rank  taxID  name",
+     taxidReport},
 
     {"grade-classification", 3,
      "grade-classification <classificationList> <mapping> <taxonomyDir> [options]\n"

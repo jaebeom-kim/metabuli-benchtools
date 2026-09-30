@@ -10,6 +10,7 @@ It splits a set of assemblies into one reference set and six query sets — fami
 2. `sample-queries` — draw a diversity-maximizing subset of the queries.
 3. MGSIM — simulate reads from the query genomes.
 4. `grade` / `grade-composition` — score per-read classification and profiling results.
+5. `taxid-report` — utility: turn a list of taxonomy IDs into a Kraken-style report.
 
 ```mermaid
 flowchart TD
@@ -265,3 +266,32 @@ Group  Rank  N  L1_mean L1_sd  BrayCurtis_mean BrayCurtis_sd  Purity_mean Purity
 
 `--min-abundance` is the estimated fraction above which a taxon counts as detected
 (for purity / completeness).
+
+## taxid-report — Kraken-style report from a taxid list
+
+Turns a plain list of NCBI taxonomy IDs into a Kraken/Metabuli-style hierarchical
+report. Each input line counts as one read at its taxon; counts are rolled up the
+taxonomy and printed as an indented tree — useful e.g. to summarize a ground-truth
+label set or any column of taxids as a `classify`-style report.
+
+- `<taxidList>` — one taxid per line (the first whitespace-delimited token of each
+  line is used, so a `cut`-free column works too; blank lines and `#` lines are
+  skipped; `0` counts as **unclassified**; ids absent from the taxonomy are
+  skipped with a warning; merged/old ids are resolved to their current taxon).
+- `<taxonomy dir>` — `names.dmp`, `nodes.dmp`, `merged.dmp`.
+- `[outReport]` — output path; writes to **stdout** if omitted (taxonomy-loading
+  messages are sent to stderr, so a redirected report stays clean).
+
+```sh
+benchtools taxid-report <taxidList> <taxonomy dir> [outReport]
+```
+
+Output — one indented row per taxon, siblings ordered by descending clade count:
+
+```
+#clade_proportion  clade_count  taxon_count  rank  taxID  name
+```
+
+`clade_count` is the reads in the clade rooted at the taxon, `taxon_count` the
+reads assigned directly to it, and `clade_proportion` = 100 × clade_count / total
+(total includes unclassified).
